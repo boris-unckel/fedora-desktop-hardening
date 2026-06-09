@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_network_manager. Override in group_vars or playbook.
+
+# Drop-in directory for NetworkManager.service.
+topic_network_manager_dropin_dir: "/etc/systemd/system/NetworkManager.service.d"
+
+# Priority-400 CIL publish directory.
+topic_network_manager_cil_dir: "/usr/local/share/selinux"
+
+# Required package: the daemon and its core library.
+topic_network_manager_required_packages:
+  - NetworkManager
+
+# Expected effective values surfaced from `systemctl show --value`.
+# RestrictAddressFamilies is recorded in alphabetical-source-order; the
+# verify script normalises both observed and expected to alphabetical
+# form before comparison so a stylistic re-ordering of the drop-in does
+# not false-flag as drift.
+topic_network_manager_expected_address_families: "AF_INET AF_INET6 AF_NETLINK AF_PACKET AF_UNIX"
+topic_network_manager_expected_selinux_domain: "NetworkManager_t"
+topic_network_manager_expected_protect_system: "strict"
+topic_network_manager_expected_nnp: "yes"
+topic_network_manager_expected_restrict_namespaces: "yes"
+topic_network_manager_expected_lock_personality: "yes"
+topic_network_manager_expected_nmcli_state: "connected"
+
+# Topic-owned CIL module name and load priority.
+topic_network_manager_cil_module_name: "nnp_network_manager"
+topic_network_manager_cil_priority: 400

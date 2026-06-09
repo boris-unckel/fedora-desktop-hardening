@@ -1,0 +1,221 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_auditd. Block apply when the host family is
+# wrong, when the auditd vendor unit is missing, when the audit package
+# is not installed, when matchpathcon for the daemon binary cannot
+# resolve to auditd_exec_t (F44 sbin/bin merge displaced the stock
+# fcontext mapping; manifest revision required), when matchpathcon for
+# the drop-in path does not return auditd_unit_file_t. The stock-policy
+# NNP-allow pre-test is reported non-fatally; an empty result motivates
+# the topic CIL deploy, a non-empty result means stock policy already
+# carries the rule and the priority-400 CIL install is an idempotent
+# overlay. The audit-stream baseline (auditctl -s, auditctl -l,
+# ausearch DAEMON_START, journalctl error stream) is captured non-
+# fatally as a fact for the operator to inspect before reboot.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_auditd targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | auditd.service vendor unit present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/auditd.service"
+  register: vendor_unit
+  failed_when: not (vendor_unit.stat.exists | default(false))
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_auditd_required_packages }}"
+
+- name: "preflight | auditctl tooling present"
+  ansible.builtin.command:
+    argv:
+      - "command"
+      - "-v"
+      - "auditctl"
+  register: auditctl_check
+  changed_when: false
+  failed_when: auditctl_check.rc != 0
+
+- name: "preflight | stock unit best-in-class directive recon"
+  ansible.builtin.shell: >
+    grep -E
+    '^(RuntimeDirectory|StateDirectory|LogsDirectory|ConfigurationDirectory|ProtectSystem|ProtectHome|ProtectKernel|ProtectControl|ProtectClock|ProtectHostname|ProtectProc|PrivateTmp|PrivateDevices|PrivateUsers|RestrictNamespaces|RestrictRealtime|RestrictSUIDSGID|RestrictAddressFamilies|LockPersonality|MemoryDenyWriteExecute|SystemCallFilter|SystemCallArchitectures|DeviceAllow|CapabilityBoundingSet|NoNewPrivileges|AmbientCapabilities|UMask|ProcSubset|User|Group|Type|ExecStart|RefuseManualStop|RefuseManualStart|Restart|RestartPreventExitStatus|ConditionKernelCommandLine|PIDFile)='
+    /usr/lib/systemd/system/auditd.service
+    || true
+  args:
+    executable: /bin/bash
+  register: stock_directive_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report stock unit directive recon"
+  ansible.builtin.debug:
+    msg: >
+      Stock auditd.service vendor-unit directive recon (non-fatal report;
+      a future package version that adds a directive overlapping the
+      topic-owned surface requires manifest revision before applying):
+      {{ stock_directive_recon.stdout | trim }}.
+
+- name: "preflight | matchpathcon /usr/sbin/auditd"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "/usr/sbin/auditd"
+  register: matchpathcon_sbin
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | matchpathcon /usr/bin/auditd"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "/usr/bin/auditd"
+  register: matchpathcon_bin
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast if neither path resolves to auditd_exec_t"
+  ansible.builtin.fail:
+    msg: |
+      Neither matchpathcon /usr/sbin/auditd nor matchpathcon
+      /usr/bin/auditd resolved to auditd_exec_t.
+        /usr/sbin/auditd: {{ matchpathcon_sbin.stdout | trim }}
+        /usr/bin/auditd:  {{ matchpathcon_bin.stdout | trim }}
+      F44 sbin/bin-merge has displaced the stock auditd_exec_t mapping
+      and no fallback path resolves it either. The manifest needs
+      revision to add a community.general.sefcontext mitigation task.
+      Open a fresh topic session against an extended manifest before
+      applying this role.
+  when:
+    - (matchpathcon_sbin.stdout | regex_search('auditd_exec_t')) is none
+    - (matchpathcon_bin.stdout | regex_search('auditd_exec_t')) is none
+
+- name: "preflight | report matchpathcon outcome"
+  ansible.builtin.debug:
+    msg: >
+      matchpathcon recon:
+        /usr/sbin/auditd -> {{ matchpathcon_sbin.stdout | trim }};
+        /usr/bin/auditd  -> {{ matchpathcon_bin.stdout | trim }}.
+
+- name: "preflight | matchpathcon drop-in path"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "{{ topic_auditd_dropin_dir }}/99-hardening.conf"
+  register: matchpathcon_dropin
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast on drop-in path SELinux type"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon for the drop-in path did not resolve to
+      auditd_unit_file_t:
+        {{ matchpathcon_dropin.stdout | trim }}
+      Stock targeted policy ships auditd_unit_file_t for
+      /etc/systemd/system/auditd.service.d/. A non-matching mapping
+      means the file_contexts entry has been edited or replaced and
+      the role's install-time context-landing assumption no longer
+      holds. Open a fresh topic session against an extended manifest
+      before applying this role.
+  when: (matchpathcon_dropin.stdout | regex_search('auditd_unit_file_t')) is none
+
+- name: "preflight | SELinux nnp_transition pre-test (expected empty)"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "init_t"
+      - "-t"
+      - "{{ topic_auditd_expected_selinux_domain }}"
+      - "-c"
+      - "process2"
+      - "-p"
+      - "nnp_transition"
+  register: nnp_check
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report SELinux nnp_transition pre-test outcome"
+  ansible.builtin.debug:
+    msg: >
+      SELinux nnp_transition pre-test for
+      init_t -> {{ topic_auditd_expected_selinux_domain }}:
+      {{ 'EMPTY (expected; topic CIL is required and will be installed)'
+         if (nnp_check.stdout | trim) == '' else
+         'NON-EMPTY (the rule is already in policy; topic CIL install at '
+         + 'priority 400 is idempotent and overlays without harm)' }}.
+
+- name: "preflight | audit-stream baseline auditctl -s"
+  ansible.builtin.command:
+    argv:
+      - auditctl
+      - "-s"
+  register: baseline_auditctl_status
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | audit-stream baseline auditctl -l"
+  ansible.builtin.command:
+    argv:
+      - auditctl
+      - "-l"
+  register: baseline_auditctl_rules
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | audit-stream baseline DAEMON_START"
+  ansible.builtin.command:
+    argv:
+      - ausearch
+      - "-m"
+      - "DAEMON_START"
+      - "-ts"
+      - "boot"
+  register: baseline_daemon_start
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | journalctl auditd error stream"
+  ansible.builtin.shell: >
+    journalctl -b 0 -p err -u auditd.service --no-pager | tail -20 || true
+  args:
+    executable: /bin/bash
+  register: baseline_journal_err
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report audit-stream baseline"
+  ansible.builtin.debug:
+    msg: >
+      Pre-deploy audit-stream baseline (non-fatal report; a non-empty
+      error stream signals a pre-existing auditd issue that the operator
+      should investigate before applying this role, since post-deploy
+      errors would otherwise be misattributed to the hardening surface):
+      auditctl -s rc={{ baseline_auditctl_status.rc }};
+      auditctl -l rc={{ baseline_auditctl_rules.rc }};
+      DAEMON_START rc={{ baseline_daemon_start.rc }};
+      journalctl error tail={{ (baseline_journal_err.stdout | trim) | default('(empty)', true) }}.

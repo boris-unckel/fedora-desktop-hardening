@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_flatpak_audio_sandbox. Override in group_vars or playbook.
+
+# Required packages on Fedora 44+. Preflight asserts presence; the role
+# fail-fasts on a missing entry. The topic is structurally inapplicable
+# without the flatpak CLI and the bubblewrap sandbox-construction binary.
+topic_flatpak_audio_sandbox_required_packages:
+  - flatpak
+  - bubblewrap
+
+# Operator-mapping applicability anchor. Plain unconfined_u logins do
+# not exercise the gap; the role aborts as a clean no-op on those hosts.
+topic_flatpak_audio_sandbox_expected_seuser_substring: "staff_u"
+
+# CIL module identity. The priority-400 publish path is provisioned by
+# foundation_selinux_cil_bootstrap.
+topic_flatpak_audio_sandbox_cil_module_name: "flatpak_audio_sandbox"
+topic_flatpak_audio_sandbox_cil_priority: 400
+topic_flatpak_audio_sandbox_cil_source_path: "/root/flatpak_audio_sandbox.cil"
+topic_flatpak_audio_sandbox_cil_source_backup_path: "/root/flatpak_audio_sandbox.cil.pre-reinstall"
+
+# Per-application permission substring used by preflight to count
+# audio-permission-holding Flatpak applications. Tunable for a future
+# Flatpak-permission-name change.
+topic_flatpak_audio_sandbox_audio_permission_substring: "pulseaudio"
+
+# Expected end-state values surfaced from the verify discipline.
+topic_flatpak_audio_sandbox_expected_module_installed: "yes"
+topic_flatpak_audio_sandbox_expected_rule_present: "yes"
+topic_flatpak_audio_sandbox_expected_avc_class_since_boot: "0"

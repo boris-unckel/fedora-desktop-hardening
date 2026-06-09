@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+galaxy_info:
+  role_name: topic_flatpak_oci_pull_dbus
+  description: "flatpak install --system OCI-pull D-Bus connect surface under staff_u user-mapping (single-rule topic-owned CIL module loaded at priority 400, no drop-in, no fcontext, no service touch)."
+  license: "MIT"
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Fedora
+      versions:
+        - "44"
+        - "45"
+
+dependencies:
+  - role: foundation_umask
+  - role: foundation_sudo_roles
+  - role: foundation_selinux_cil_bootstrap
+  - role: foundation_audit_logging_baseline

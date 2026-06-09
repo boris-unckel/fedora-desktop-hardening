@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_avahi_daemon. Override in group_vars or playbook.
+
+# Drop-in directory for avahi-daemon.service.
+topic_avahi_daemon_dropin_dir: "/etc/systemd/system/avahi-daemon.service.d"
+
+# Priority-400 CIL publish directory.
+topic_avahi_daemon_cil_dir: "/usr/local/share/selinux"
+
+# Required package: the daemon, the unit file, the resolver/browse helpers,
+# the system-tmpfiles configuration that creates /run/avahi-daemon at boot.
+topic_avahi_daemon_required_packages:
+  - avahi
+
+# Topic-owned CIL module name and load priority.
+topic_avahi_daemon_cil_module_name: "nnp_avahi_daemon"
+topic_avahi_daemon_cil_priority: 400
+
+# Expected effective values surfaced from `systemctl show --value`.
+topic_avahi_daemon_expected_selinux_domain: "avahi_t"
+topic_avahi_daemon_expected_nnp: "yes"
+topic_avahi_daemon_expected_protect_system: "strict"
+topic_avahi_daemon_expected_protect_home: "yes"
+topic_avahi_daemon_expected_protect_kernel_tunables: "yes"
+topic_avahi_daemon_expected_protect_kernel_modules: "yes"
+topic_avahi_daemon_expected_protect_kernel_logs: "yes"
+topic_avahi_daemon_expected_protect_control_groups: "yes"
+topic_avahi_daemon_expected_protect_clock: "yes"
+topic_avahi_daemon_expected_protect_hostname: "yes"
+topic_avahi_daemon_expected_protect_proc: "invisible"
+topic_avahi_daemon_expected_procsubset: "pid"
+topic_avahi_daemon_expected_private_tmp: "yes"
+topic_avahi_daemon_expected_private_devices: "yes"
+topic_avahi_daemon_expected_read_write_paths_substring: "/run/avahi-daemon"
+topic_avahi_daemon_expected_restrict_address_families:
+  - "AF_INET"
+  - "AF_INET6"
+  - "AF_UNIX"
+  - "AF_NETLINK"
+topic_avahi_daemon_expected_restrict_namespaces: "yes"
+topic_avahi_daemon_expected_restrict_realtime: "yes"
+topic_avahi_daemon_expected_restrict_suid_sgid: "yes"
+topic_avahi_daemon_expected_lock_personality: "yes"
+topic_avahi_daemon_expected_mdwe: "yes"
+topic_avahi_daemon_expected_syscall_architectures: "native"
+topic_avahi_daemon_expected_syscall_filter_substrings:
+  - "@system-service"
+  - "chown"
+  - "fchown"
+  - "lchown"
+  - "chroot"
+topic_avahi_daemon_expected_cap_bounding_set:
+  - "CAP_CHOWN"
+  - "CAP_DAC_OVERRIDE"
+  - "CAP_SETUID"
+  - "CAP_SETGID"
+  - "CAP_SYS_CHROOT"
+topic_avahi_daemon_expected_umask: "0027"

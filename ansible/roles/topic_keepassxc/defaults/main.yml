@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_keepassxc. Override in group_vars or playbook.
+
+# Required package: the KeePassXC password manager.
+topic_keepassxc_required_packages:
+  - keepassxc
+
+# The three stock binaries relabeled to keepassxc_exec_t.
+topic_keepassxc_binaries:
+  - /usr/bin/keepassxc
+  - /usr/bin/keepassxc-cli
+  - /usr/bin/keepassxc-proxy
+
+# Operator-chosen database directory, treated as a crypto-material vault.
+# Override for a non-default path. The role does NOT create this directory;
+# a missing path is a preflight fail-fast (the operator migrates the database
+# into it first).
+topic_keepassxc_database_dir: "/home/{{ ansible_user_id }}/keepass"
+
+# fcontext regex: matches *.kdbx and *.kdbx.backup at any depth under the dir.
+topic_keepassxc_database_fcontext_regex: '{{ topic_keepassxc_database_dir }}(/.*)?\.kdbx(\.backup)?'
+
+# Three topic-owned CIL modules, loaded at priority 400, materialized under
+# the CIL source directory. keepassxc_extras must be present in the same
+# semodule transaction or earlier: the two companion modules reference its
+# types and bin_t at link time.
+topic_keepassxc_cil_priority: 400
+topic_keepassxc_cil_source_dir: "/root"
+topic_keepassxc_cil_modules:
+  - keepassxc_extras
+  - keepassxc_dbtype_autotrans
+  - keepassxc_spawn_isolation
+
+# Permissive discovery posture marker on keepassxc_t. A later operator-policy
+# lockdown that removes the typepermissive declaration overrides this to 'no'.
+topic_keepassxc_expected_typepermissive_keepassxc_t: "yes"
+
+# Expected post-deploy labels.
+topic_keepassxc_binary_setype: "keepassxc_exec_t"
+topic_keepassxc_database_setype: "keepassxc_db_t"

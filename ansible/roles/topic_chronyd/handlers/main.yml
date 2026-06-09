@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_chronyd.
+#
+# Two notification channels:
+#   "topic_chronyd cil changed"    — fires on a change to the CIL source
+#                                     file. Triggers semodule install
+#                                     under sysadm_r.
+#   "topic_chronyd dropin changed" — fires on a change to either drop-in
+#                                     file. Triggers restorecon, daemon-
+#                                     reload, and a unit restart.
+
+- name: "topic_chronyd | semodule install nnp_chronyd"
+  ansible.builtin.command:
+    argv:
+      - semodule
+      - "-X"
+      - "{{ topic_chronyd_cil_priority | string }}"
+      - "-i"
+      - "{{ topic_chronyd_cil_dir }}/{{ topic_chronyd_cil_module_name }}.cil"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_chronyd cil changed"
+
+- name: "topic_chronyd | restorecon chronyd drop-ins"
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-v"
+      - "{{ topic_chronyd_dropin_dir }}/99-hardening.conf"
+      - "{{ topic_chronyd_dropin_dir }}/99-nnp.conf"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_chronyd dropin changed"
+
+- name: "topic_chronyd | daemon-reload"
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "topic_chronyd dropin changed"
+
+- name: "topic_chronyd | restart chronyd"
+  ansible.builtin.systemd:
+    name: "chronyd.service"
+    state: restarted
+  listen: "topic_chronyd dropin changed"

@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_flatpak_collection_id. Override in group_vars or playbook.
+
+# Required packages on Fedora 44+. Preflight asserts presence and aborts
+# fail-fast on a missing flatpak or ostree entry.
+topic_flatpak_collection_id_required_packages:
+  - flatpak
+  - ostree
+
+# Operator-mapping applicability anchor. unconfined_u logins exhibit the
+# same configuration-state behaviour, but the surrounding hardening posture
+# is owned by separate articles; the role completes on unconfined_u with an
+# informational note and does not abort.
+topic_flatpak_collection_id_expected_seuser_substring: "staff_u"
+
+# System-wide Flatpak repo configuration file. Mutated in place by the
+# `flatpak remote-modify` invocation, which preserves mode, owner, and
+# SELinux type by design (O_RDWR, not O_CREAT).
+topic_flatpak_collection_id_repo_config_path: "/var/lib/flatpak/repo/config"
+
+# Per-remote binding mapping. The two well-known third-party remotes
+# carrying public collection-id bindings on Fedora 44 are flathub
+# (collection-id org.flathub.Stable) and gnome-nightly (collection-id
+# org.gnome.Nightly); both bindings are upstream-published constants,
+# declared in the upstream .flatpakrepo files of the respective projects
+# and stable since the introduction of collection-bindings. Any additional
+# system-wide remote the operator has configured can be added here as a
+# `<remote>: <binding>` entry.
+topic_flatpak_collection_id_remote_bindings:
+  flathub: org.flathub.Stable
+  gnome-nightly: org.gnome.Nightly
+
+# URL-prefix substring used by the preflight to identify OCI-typed
+# remotes. Tunable for a future remote-format change.
+topic_flatpak_collection_id_oci_url_prefix: "oci+"
+
+# Expected end-state values surfaced from the verify discipline.
+topic_flatpak_collection_id_expected_nonfatal_fetch_warning_count: "0"

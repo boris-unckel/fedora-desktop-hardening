@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+galaxy_info:
+  role_name: topic_flatpak_portal_cache
+  description: "User-bus restart of xdg-document-portal.service to flush the per-user Document portal token cache around any sandbox-tightening flatpak override push (no system-side artefact, no SELinux module, no drop-in, no file-label change)."
+  license: "MIT"
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Fedora
+      versions:
+        - "44"
+        - "45"
+
+# Deliberately narrower than the sibling Flatpak topics' four-Foundation set:
+# this role neither writes a system-side config (no UMASK reflex), nor ships
+# a CIL module (no Layer 2), nor performs an AVC-stream assertion (no
+# Layer 3). The override-store read in the probe transits Layer 1's
+# role-switch surface.
+dependencies:
+  - role: foundation_sudo_roles

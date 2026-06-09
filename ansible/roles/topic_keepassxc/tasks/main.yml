@@ -1,0 +1,131 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_keepassxc
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying does not change state on a correctly
+# configured host; see README.md "Idempotence notes").
+#
+# Modify ordering invariant:
+#   1. Push the three CIL sources to /root/.
+#   2. Install all three modules via semodule -X 400 -i (handler).
+#   3. flush_handlers — the custom types must exist before the fcontext add.
+#   4. Add the four fcontext mappings (community.general.sefcontext).
+#   5. restorecon the binaries and the database directory (handlers).
+# No drop-in, no daemon-reload, no service restart, no host reboot.
+
+- name: "topic_keepassxc | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_keepassxc
+    - preflight
+
+- name: "topic_keepassxc | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_keepassxc
+    - probe
+
+- name: "topic_keepassxc | apply configuration"
+  block:
+
+    - name: "topic_keepassxc | install CIL sources under /root/"
+      ansible.builtin.copy:
+        src: "{{ item }}.cil"
+        dest: "{{ topic_keepassxc_cil_source_dir }}/{{ item }}.cil"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      loop: "{{ topic_keepassxc_cil_modules }}"
+      notify:
+        - "topic_keepassxc cil changed"
+
+    - name: "topic_keepassxc | flush handlers (modules must load before fcontext add)"
+      ansible.builtin.meta: flush_handlers
+
+    - name: "topic_keepassxc | fcontext mapping for the three binaries"
+      community.general.sefcontext:
+        target: "{{ item }}"
+        setype: "{{ topic_keepassxc_binary_setype }}"
+        state: present
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      loop: "{{ topic_keepassxc_binaries }}"
+      notify:
+        - "restorecon keepassxc binaries"
+
+    - name: "topic_keepassxc | fcontext mapping for the database regex"
+      community.general.sefcontext:
+        target: "{{ topic_keepassxc_database_fcontext_regex }}"
+        setype: "{{ topic_keepassxc_database_setype }}"
+        state: present
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      notify:
+        - "restorecon keepassxc database"
+
+    - name: "topic_keepassxc | read live keepassxc GUI PID"
+      ansible.builtin.shell: >
+        set -o pipefail; pgrep -x keepassxc | head -1 || true
+      args:
+        executable: /bin/bash
+      register: live_gui_pid
+      changed_when: false
+
+    - name: "topic_keepassxc | read live SELinux domain"
+      ansible.builtin.shell: >
+        awk -F: '{print $3}' /proc/{{ live_gui_pid.stdout | trim }}/attr/current
+      args:
+        executable: /bin/bash
+      register: live_domain
+      changed_when: false
+      failed_when: false
+      when: (live_gui_pid.stdout | trim) | length > 0
+
+    - name: "topic_keepassxc | read AVC count since boot"
+      ansible.builtin.shell: >
+        set -o pipefail;
+        ausearch -m AVC,USER_AVC -ts boot
+        | grep -cE '(keepassxc|keepassxc_t|keepassxc_exec_t|keepassxc_db_t)'
+        || true
+      args:
+        executable: /bin/bash
+      register: avc_count
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_keepassxc | report live state"
+      ansible.builtin.debug:
+        msg: >
+          keepassxc GUI PID={{ (live_gui_pid.stdout | trim) | default('(none)') }},
+          SELinux domain={{ (live_domain.stdout | default('?')) | trim }},
+          AVC count since boot={{ (avc_count.stdout | default('0')) | trim }}.
+
+  rescue:
+
+    - name: "topic_keepassxc | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_keepassxc apply step failed. Auto-rollback is intentionally
+          not performed; reverting the three CIL modules plus four fcontext
+          mappings is an operator decision. See the topic Reference under
+          "Verification" for the rollback sequence (remove the companion
+          modules before keepassxc_extras, since they reference its types).
+
+  tags:
+    - topic_keepassxc
+    - apply
+
+- name: "topic_keepassxc | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_keepassxc
+    - verify

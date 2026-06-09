@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# System-tier preparation.
+#
+# Three stages run in order:
+#   1. Pre-hardening baseline capture on the still-stock node (permissive,
+#      unconfined, topics not yet applied) so the post-hardening scores have a
+#      reference. The scoring tools are installed best-effort; on a node whose
+#      IPv6 package egress is unavailable the security scores are simply marked
+#      unavailable and the boot-survival and per-topic persistence gates carry
+#      the run. systemd-analyze is built into systemd and always runs.
+#   2. The shared foundation substrate (SELinux tooling probe, staff_u mapping,
+#      enforcing, reboot-to-enforcing, then the four foundation roles).
+#   3. The two topic preconditions the operator owns in production: the AIDE
+#      baseline database and the pinentry-gnome3 selection. Without these the
+#      aide and gnupg_pinentry_dbus topics would gate themselves out.
+
+- name: Capture the pre-hardening security baseline on the stock node
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    baseline_dir: /root/livetest-baseline
+    scored_units:
+      - auditd.service
+      - dbus-broker.service
+      - NetworkManager.service
+      - chronyd.service
+      - crond.service
+      - rngd.service
+      - tuned.service
+      - udisks2.service
+      - avahi-daemon.service
+      - smartd.service
+      - thermald.service
+      - alsa-state.service
+      - plymouth-start.service
+  tasks:
+    - name: Wait for the cloud-init login to accept SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    - name: Create the baseline directory
+      ansible.builtin.file:
+        path: "{{ baseline_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Install the security-scoring tools (best-effort; needs IPv6 egress)
+      ansible.builtin.dnf:
+        name:
+          - openscap-scanner
+          - scap-security-guide
+          - lynis
+        state: present
+      register: scoring_tools
+      failed_when: false
+
+    - name: Record whether the scoring tools are available
+      ansible.builtin.copy:
+        dest: "{{ baseline_dir }}/scoring_tools_available"
+        content: "{{ 'yes' if (scoring_tools.rc | default(1)) == 0 else 'no' }}\n"
+        mode: "0600"
+
+    - name: Capture the systemd-analyze security baseline (whole system)
+      ansible.builtin.shell: >-
+        systemd-analyze security --no-pager > {{ baseline_dir }}/systemd-analyze.pre.txt 2>&1 || true
+      changed_when: false
+
+    - name: Capture the per-unit exposure baseline for the hardened units
+      ansible.builtin.shell: >-
+        systemd-analyze security {{ item }} --no-pager 2>/dev/null
+        | sed -n 's/.*Overall exposure level for[^:]*:[[:space:]]*\([0-9.]*\).*/\1/p'
+        > {{ baseline_dir }}/exposure.{{ item }}.pre 2>/dev/null || true
+      changed_when: false
+      loop: "{{ scored_units }}"
+
+    - name: Capture the OpenSCAP baseline (best-effort)
+      ansible.builtin.shell: |
+        set +e
+        ds=/usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml
+        prof=$(oscap info "$ds" 2>/dev/null | sed -n 's/^[[:space:]]*Id:[[:space:]]*\(xccdf_org.ssgproject.content_profile_.*\)$/\1/p' | head -n1)
+        echo "$prof" > {{ baseline_dir }}/oscap_profile
+        oscap xccdf eval --profile "$prof" --results-arf {{ baseline_dir }}/oscap-arf.pre.xml "$ds" >/dev/null 2>&1
+        p=$(grep -c '<result>pass</result>' {{ baseline_dir }}/oscap-arf.pre.xml 2>/dev/null)
+        f=$(grep -c '<result>fail</result>' {{ baseline_dir }}/oscap-arf.pre.xml 2>/dev/null)
+        echo "pass=${p:-0} fail=${f:-0}" > {{ baseline_dir }}/oscap.pre.txt
+        exit 0
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: (scoring_tools.rc | default(1)) == 0
+
+    - name: Capture the Lynis baseline (best-effort)
+      ansible.builtin.shell: |
+        set +e
+        lynis audit system --quick --no-colors >/dev/null 2>&1
+        grep '^hardening_index=' /var/log/lynis-report.dat 2>/dev/null \
+          > {{ baseline_dir }}/lynis.pre.txt || echo 'hardening_index=' > {{ baseline_dir }}/lynis.pre.txt
+        exit 0
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: (scoring_tools.rc | default(1)) == 0
+
+# Stage 2: the shared foundation substrate (includes the reboot to enforcing).
+# topic_aide and topic_gnupg_pinentry_dbus are held out of the system tier
+# (see converge.yml), so their operator-precondition seeds are not needed here.
+- name: Prepare the substrate and foundation tier
+  ansible.builtin.import_playbook: ../shared/foundation_prepare.yml

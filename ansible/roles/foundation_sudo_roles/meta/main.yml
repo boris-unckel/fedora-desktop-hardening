@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+galaxy_info:
+  role_name: foundation_sudo_roles
+  description: "Foundation layer 1 — staff_u per-user mapping, sudo role transitions, and the daily-desktop CIL allow-spec."
+  license: "MIT"
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Fedora
+      versions:
+        - "44"
+        - "45"
+
+dependencies:
+  - role: foundation_umask

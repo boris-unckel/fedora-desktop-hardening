@@ -1,0 +1,14 @@
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+;; flatpak_audio_sandbox.cil — patches one stock-policy gap on Fedora 44
+;; that affects the bwrap sandbox-construction step of Flatpak applications
+;; holding the pulseaudio socket permission, on hosts where the desktop
+;; login is mapped to the confined SELinux user staff_u and bwrap runs in
+;; the source domain staff_t (no stock type-transition to bwrap_t).
+;;
+;; Functional rule: bwrap performs an MS_BIND mount of the host /dev/snd
+;; directory (type device_t) into the sandbox root at /newroot/dev/snd.
+;; Stock policy lacks the mounton allow on device_t directories for
+;; staff_t, so the sandbox construction aborts and the application never
+;; starts. Audio-silent applications are unaffected (the audio-bind step
+;; is gated by the pulseaudio permission declared in the Flatpak manifest).
+(allow staff_t device_t (dir (mounton)))

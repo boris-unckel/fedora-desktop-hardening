@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_flatpak_portal_cache. Override in group_vars or playbook.
+
+# Required packages on Fedora 44+. Preflight asserts presence and aborts
+# fail-fast on a missing flatpak or xdg-desktop-portal entry. The
+# GTK-or-GNOME backend slot is checked separately and is informational only;
+# either backend is acceptable.
+topic_flatpak_portal_cache_required_packages:
+  - flatpak
+  - xdg-desktop-portal
+
+# Either of these backends satisfies the GTK/GNOME slot. The role records
+# which one is installed and emits an informational note; missing both is
+# not a deploy blocker, because the cache lifecycle is owned by the
+# frontend xdg-document-portal component, not by either backend.
+topic_flatpak_portal_cache_backend_packages:
+  - xdg-desktop-portal-gtk
+  - xdg-desktop-portal-gnome
+
+# Operator-mapping applicability anchor. unconfined_u logins exhibit the
+# same cache-lifecycle behaviour, but the surrounding hardening posture is
+# owned by separate articles; the role completes on unconfined_u with an
+# informational note and does not abort.
+topic_flatpak_portal_cache_expected_seuser_substring: "staff_u"
+
+# Per-user portal service. The role's primary mutating action is a single
+# user-bus restart of this unit.
+topic_flatpak_portal_cache_portal_service_name: "xdg-document-portal.service"
+
+# Per-user FUSE truth-anchor path. The verify counts subdirectories under
+# each <appid> entry; immediately post-reset every entry must be empty (or
+# the path itself absent).
+topic_flatpak_portal_cache_fuse_by_app_path: "/run/user/{{ ansible_user_uid }}/doc/by-app"
+
+# Expected end-state values surfaced from the verify discipline.
+topic_flatpak_portal_cache_expected_portal_service_state: "active"
+topic_flatpak_portal_cache_expected_fuse_by_app_token_count: "0"
+topic_flatpak_portal_cache_expected_persistent_documents_line_count: "0"

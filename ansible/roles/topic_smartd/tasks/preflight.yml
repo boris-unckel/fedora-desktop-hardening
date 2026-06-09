@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_smartd. Block apply when the host family is
+# wrong, when the smartd vendor unit is missing, when the F44 binary path
+# is not the expected layout, or when the smartmontools package is not
+# installed. The SELinux nnp_transition pre-test confirms the negative
+# posture (empty return) that motivates the topic-owned CIL deploy; an
+# unexpected non-empty return is reported as informational and does not
+# gate apply, because the CIL install at priority 400 is idempotent. The
+# SATA-SMART pre-hardening baseline is captured as informational.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_smartd targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | smartd.service vendor unit present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/smartd.service"
+  register: vendor_unit
+  failed_when: not (vendor_unit.stat.exists | default(false))
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_smartd_required_packages }}"
+
+- name: "preflight | F44 binary path layout check"
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: bin_path_check
+  loop:
+    - "/usr/bin/smartd"
+    - "/usr/sbin/smartd"
+
+- name: "preflight | report binary path layout"
+  ansible.builtin.debug:
+    msg: >
+      Binary path {{ item.item }}: exists={{ item.stat.exists | default(false) }},
+      type={{ 'symlink' if (item.stat.islnk | default(false))
+              else ('regular' if (item.stat.isreg | default(false)) else 'other') }}.
+
+  loop: "{{ bin_path_check.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "preflight | SELinux nnp_transition pre-test (expected empty)"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "init_t"
+      - "-t"
+      - "{{ topic_smartd_expected_selinux_domain }}"
+      - "-c"
+      - "process2"
+      - "-p"
+      - "nnp_transition"
+  register: nnp_check
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report SELinux nnp_transition pre-test outcome"
+  ansible.builtin.debug:
+    msg: >
+      SELinux nnp_transition pre-test for
+      init_t -> {{ topic_smartd_expected_selinux_domain }}:
+      {{ 'EMPTY (expected; topic CIL is required and will be installed)'
+         if (nnp_check.stdout | trim) == '' else
+         'NON-EMPTY (the rule is already in policy; topic CIL install at '
+         + 'priority 400 is idempotent and overlays without harm)' }}.
+
+- name: "preflight | SATA-SMART pre-hardening baseline (informational)"
+  ansible.builtin.shell: >
+    journalctl -u smartd.service -b 0
+    | grep -ciE 'sgio|housekeeping|operation not permitted'
+    || true
+  args:
+    executable: /bin/bash
+  register: smart_baseline
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report SATA-SMART pre-hardening baseline"
+  ansible.builtin.debug:
+    msg: >
+      SATA-SMART pre-hardening baseline (journalctl entries containing
+      sgio/housekeeping/operation not permitted across this boot):
+      {{ smart_baseline.stdout | default('0') | trim }}.
+      A non-zero baseline indicates a pre-existing condition; the
+      post-deploy verify must reconcile against this number.

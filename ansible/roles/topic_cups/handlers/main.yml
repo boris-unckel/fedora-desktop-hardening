@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_cups.
+#
+# Two notification channels:
+#   "topic_cups cil changed"    — fires on a change to the CIL source
+#                                  file. Triggers semodule install under
+#                                  sysadm_r.
+#   "topic_cups dropin changed" — fires on a change to either drop-in
+#                                  file. Triggers restorecon, daemon-
+#                                  reload, and a unit restart.
+
+- name: "topic_cups | semodule install nnp_cups"
+  ansible.builtin.command:
+    argv:
+      - semodule
+      - "-X"
+      - "{{ topic_cups_cil_priority | string }}"
+      - "-i"
+      - "{{ topic_cups_cil_dir }}/{{ topic_cups_cil_module_name }}.cil"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_cups cil changed"
+
+- name: "topic_cups | restorecon cups drop-ins"
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-v"
+      - "{{ topic_cups_dropin_dir }}/99-hardening.conf"
+      - "{{ topic_cups_dropin_dir }}/99-nnp.conf"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_cups dropin changed"
+
+- name: "topic_cups | daemon-reload"
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "topic_cups dropin changed"
+
+- name: "topic_cups | restart cups"
+  ansible.builtin.systemd:
+    name: "cups.service"
+    state: restarted
+  listen: "topic_cups dropin changed"

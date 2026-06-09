@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+galaxy_info:
+  role_name: foundation_umask
+  description: "Foundation layer 0 — system-wide UMASK 0027 via /etc/login.defs and pam_umask."
+  license: "MIT"
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Fedora
+      versions:
+        - "44"
+        - "45"
+
+# Layer 0 of the Foundation tier — no Foundation dependencies.
+dependencies: []

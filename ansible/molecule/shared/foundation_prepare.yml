@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Shared preparation for component scenarios.
+#
+# A stock Fedora cloud image boots SELinux permissive with the default user
+# mapped to unconfined_u and without the SELinux management tooling the
+# foundation roles call. This play brings the node to the substrate those
+# roles assume, then applies the four foundation roles in fixed order.
+#
+# Bootstrap ordering is load-bearing: the staff_u login mapping must be
+# established from the initial unconfined context (plain sudo reaches
+# unconfined_t, which can run semanage), because unconfined_u is not
+# authorized for sysadm_r. Only after the mapping and a connection reset does
+# the user become staff_u, which is authorized for sysadm_r, so the later
+# role-switched become works.
+
+- name: Establish the hardening substrate
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    connection_user: "{{ ansible_user }}"
+  tasks:
+    - name: Wait for the cloud-init-created login to accept SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    - name: Gather facts once the connection is established
+      ansible.builtin.setup:
+
+    # The base snapshot bakes this tooling, so the normal path installs nothing
+    # and needs no network. Only a base that has drifted from the package set
+    # triggers a dnf install. Probing with rpm first keeps prepare independent
+    # of the managed node's IPv6 package egress, whose DNS is not always up at
+    # first boot and which, once the baked dnf metadata cache goes stale, would
+    # otherwise force a network refresh that fails on a private-only node.
+    - name: Probe whether the SELinux management tooling is already present
+      ansible.builtin.command: "rpm -q {{ item }}"
+      loop:
+        - policycoreutils
+        - policycoreutils-python-utils
+        - selinux-policy-targeted
+        - setools-console
+        - audit
+      register: seltool_presence
+      changed_when: false
+      failed_when: false
+
+    - name: Install any SELinux management tooling missing from the base
+      ansible.builtin.dnf:
+        name: "{{ seltool_presence.results | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
+        state: present
+      when: (seltool_presence.results | selectattr('rc', 'ne', 0) | list | length) > 0
+
+    - name: Map the connection user to staff_u (add, or modify if already present)
+      ansible.builtin.shell: >-
+        semanage login -a -s staff_u -r s0-s0:c0.c1023 {{ connection_user | quote }}
+        || semanage login -m -s staff_u -r s0-s0:c0.c1023 {{ connection_user | quote }}
+      changed_when: true
+
+    - name: Make sudo apply a restrictive umask (privileged ops and the
+            become-context verify then create files at 0027)
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/99-livetest-umask
+        content: |
+          Defaults umask=0027
+          Defaults umask_override
+        owner: root
+        group: root
+        mode: "0440"
+        validate: "visudo -cf %s"
+
+    - name: Set SELinux to enforcing in the persistent configuration
+      ansible.posix.selinux:
+        policy: targeted
+        state: enforcing
+
+    - name: Reboot into a clean enforcing boot
+      # The node boots from a permissive base so the clone's first cloud-init run
+      # (which configures the private NIC) completes without enforcing-time stalls.
+      # Rebooting now brings the node up enforcing with cloud-init already done:
+      # sshd starts normally, the filesystem labels (relabelled in the base) are
+      # correct, and there is no mid-run permissive->enforcing transition noise for
+      # the audit-cleanliness checks. The reboot also re-establishes the session so
+      # pam_selinux yields staff_u for the now-active login mapping.
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+        post_reboot_delay: 5
+
+- name: Apply the foundation tier in fixed order
+  hosts: all
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  vars:
+    foundation_sudo_roles_user: "{{ ansible_user }}"
+  tasks:
+    - name: "Layer 0 - umask"
+      ansible.builtin.include_role:
+        name: foundation_umask
+
+    - name: "Layer 1 - sudo roles and SELinux login mapping"
+      ansible.builtin.include_role:
+        name: foundation_sudo_roles
+
+    - name: Re-establish the session after the mapping is reasserted
+      ansible.builtin.meta: reset_connection
+
+    - name: "Layer 2 - SELinux CIL bootstrap"
+      ansible.builtin.include_role:
+        name: foundation_selinux_cil_bootstrap
+
+    - name: "Layer 3 - audit logging baseline"
+      ansible.builtin.include_role:
+        name: foundation_audit_logging_baseline

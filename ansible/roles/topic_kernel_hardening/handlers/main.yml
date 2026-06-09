@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_kernel_hardening.
+#
+# Three notification channels:
+#   "topic_kernel_hardening sysctl changed"   — fires on a change to
+#     99-hardening.conf. Triggers `sysctl --system` reload under
+#     sysadm_r/sysadm_t (five of the configured keys are SELinux-
+#     restricted at the runtime apply path).
+#   "topic_kernel_hardening coredump changed" — fires on a change to
+#     disable.conf. Triggers `systemctl daemon-reload`.
+#   "topic_kernel_hardening dropin changed"   — fires on any drop-in
+#     change. Triggers restorecon against the four shipping paths
+#     (defence-in-depth; no-op when the install ran from sysadm_t).
+#
+# There is no `semodule install` handler (the role ships no CIL module).
+# There is no `restart` handler (the role owns no service unit).
+
+- name: "topic_kernel_hardening | apply sysctl"
+  ansible.builtin.command:
+    argv:
+      - sysctl
+      - "--system"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_kernel_hardening sysctl changed"
+
+- name: "topic_kernel_hardening | daemon-reload coredump"
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "topic_kernel_hardening coredump changed"
+
+- name: "topic_kernel_hardening | restorecon kernel-hardening drop-ins"
+  # Restorecon only the paths that already exist. The first flush_handlers in
+  # the apply block fires this handler (notified by the sysctl drop-in) before
+  # the modprobe/limits/coredump drop-ins are written, so a fixed four-path
+  # restorecon would fail on the not-yet-created files. Skipping absent paths
+  # keeps the defence-in-depth relabel correct at every flush point and is a
+  # no-op when the install already ran from sysadm_t.
+  ansible.builtin.shell: |
+    for f in \
+      "{{ topic_kernel_hardening_sysctl_dir }}/99-hardening.conf" \
+      "{{ topic_kernel_hardening_modprobe_dir }}/hardening.conf" \
+      "{{ topic_kernel_hardening_limits_dir }}/90-nocore.conf" \
+      "{{ topic_kernel_hardening_coredump_dir }}/disable.conf"; do
+      [ -e "$f" ] && restorecon -v "$f" || true
+    done
+  args:
+    executable: /bin/bash
+  changed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_kernel_hardening dropin changed"

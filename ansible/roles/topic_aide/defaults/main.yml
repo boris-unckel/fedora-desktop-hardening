@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_aide. Override in group_vars or playbook.
+
+# Unit-file directory for the operator-supplied service and timer.
+topic_aide_unit_dir: "/etc/systemd/system"
+
+# Priority-400 CIL publish directory.
+topic_aide_cil_dir: "/usr/local/share/selinux"
+
+# /etc/profile.d directory for the optional interactive-shell push-banner.
+topic_aide_profile_d_dir: "/etc/profile.d"
+
+# Required package: the binary, the configuration template, the SELinux
+# type set, and the database / log directory templates.
+topic_aide_required_packages:
+  - aide
+
+# Topic-owned CIL module name and load priority.
+topic_aide_cil_module_name: "aide_extras"
+topic_aide_cil_priority: 400
+
+# Optional /etc/profile.d/aide-alert.sh push-banner. Set to false to skip
+# the file write.
+topic_aide_install_alert_banner: true
+
+# Daemon binary paths checked by matchpathcon. The canonical (post-merge)
+# path is /usr/bin/aide; the package-installed path is /usr/sbin/aide.
+# The preflight runs both calls and requires aide_exec_t from at least
+# one as fail-fast.
+topic_aide_binary_canonical: "/usr/bin/aide"
+topic_aide_binary_pre_merge: "/usr/sbin/aide"
+topic_aide_expected_fcontext: "aide_exec_t"
+
+# Expected SELinux runtime domain of the timer-spawned aide-check process.
+topic_aide_expected_selinux_domain: "aide_t"
+
+# Database and configuration paths.
+topic_aide_db_path: "/var/lib/aide/aide.db.gz"
+topic_aide_db_dir: "/var/lib/aide"
+topic_aide_log_dir: "/var/log/aide"
+topic_aide_conf_path: "/etc/aide.conf"
+
+# Expected database file triplet.
+topic_aide_expected_db_mode: "600"
+topic_aide_expected_db_owner: "root"
+topic_aide_expected_db_group: "root"
+topic_aide_expected_db_seltype: "aide_db_t"
+
+# Expected configuration file triplet.
+topic_aide_expected_conf_mode: "600"
+topic_aide_expected_conf_owner: "root"
+topic_aide_expected_conf_group: "root"
+topic_aide_expected_conf_seltype: "etc_t"
+
+# Expected systemd unit-file triplet.
+topic_aide_expected_unit_mode: "0644"
+topic_aide_expected_unit_owner: "root"
+topic_aide_expected_unit_group: "root"
+topic_aide_expected_unit_seltype: "systemd_unit_file_t"
+
+# Expected timer state.
+topic_aide_expected_timer_active: "active"
+topic_aide_expected_timer_enabled: "enabled"
+
+# Expected number of allow rules in the topic-owned CIL module.
+topic_aide_expected_cil_allow_rules: 3
+
+# Managed scope-tuning block appended to the stock /etc/aide.conf via
+# ansible.builtin.blockinfile. The stock body and the 0600 root:root mode
+# are preserved; only this neutral marker-delimited block is added. The
+# {mark} placeholder expands to BEGIN / END.
+topic_aide_scope_marker: "# {mark} topic_aide scope tuning (managed)"
+
+# The grep-able literal embedded in both markers; probe.sh and verify.sh
+# assert this string is present in /etc/aide.conf.
+topic_aide_scope_marker_literal: "topic_aide scope tuning (managed)"
+
+# Body of the managed scope-tuning block. AIDE 0.19+ selects the tree node
+# by deepest match, so each specific line overrides a broader stock rule
+# without editing any stock line. One reduced rule-group plus four scope
+# decisions; see docs/reference/topics/aide.md for the full rationale.
+topic_aide_scope_block: |
+  # AIDE 0.19+ deepest-match: these specific lines override broader stock rules.
+
+  # Custom rule-group (inode- and ctime-tolerant).
+  # vfat carries no SELinux labels and no stable inodes, so VarVfat omits
+  # selinux/xattrs/acl and the i/n inode attributes.
+  VarVfat        = p+u+g+s+m+sha256+sha512
+
+  # 1. systemd runtime resource-control tree (machine-managed): out of scope.
+  !/etc/systemd/system\.control
+
+  # 2. EFI System Partition (vfat): keep content, tolerate synthesized-inode churn.
+  /boot/efi(/.*)?$  =vfat  VarVfat
+
+  # 3. CUPS notification state (volatile).
+  !/etc/cups/subscriptions\.conf(\.O)?$
+
+  # 4. Volatile caches (non-config).
+  !/root/\.cache
+  !/usr/lib/sysimage/libdnf5/.*\.sqlite(-shm|-wal)?$
+
+# Acknowledgement marker the banner writes into its body; verify.sh greps
+# for it to confirm the banner is the acknowledgement-aware end-state.
+topic_aide_banner_ack_marker: "_aide_mono"

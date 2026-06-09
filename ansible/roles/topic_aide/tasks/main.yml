@@ -1,0 +1,240 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_aide
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying does not change state on a correctly
+# configured host with the database baseline in place; see README.md
+# "Idempotence notes").
+#
+# Modify ordering invariant:
+#   1. Push CIL source to /usr/local/share/selinux/.
+#   2. Install CIL module via semodule -X 400 -i (handler).
+#   3. flush_handlers — the CIL must be loaded before the timer first
+#      fires, so the daily check sees the closed policy gaps from the
+#      first run.
+#   4. Push the two unit files (aide-check.service, aide-check.timer).
+#   5. Push the optional /etc/profile.d/aide-alert.sh banner.
+#   6. restorecon on the unit files (handler).
+#   7. Daemon-reload + restart aide-check.timer (handlers).
+#   8. Enable + start aide-check.timer.
+#   9. Surface the first-baseline pause: task when the database is
+#      missing.
+
+- name: "topic_aide | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_aide
+    - preflight
+
+- name: "topic_aide | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_aide
+    - probe
+
+- name: "topic_aide | apply configuration"
+  block:
+
+    - name: "topic_aide | CIL publish directory present"
+      ansible.builtin.file:
+        path: "{{ topic_aide_cil_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "topic_aide | install CIL source"
+      ansible.builtin.copy:
+        src: "{{ topic_aide_cil_module_name }}.cil"
+        dest: "{{ topic_aide_cil_dir }}/{{ topic_aide_cil_module_name }}.cil"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      notify:
+        - "topic_aide cil changed"
+
+    - name: "topic_aide | flush handlers (CIL must be loaded before the timer fires)"
+      ansible.builtin.meta: flush_handlers
+
+    - name: "topic_aide | unit directory present"
+      ansible.builtin.file:
+        path: "{{ topic_aide_unit_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "topic_aide | install aide-check.service"
+      ansible.builtin.copy:
+        src: "aide-check.service"
+        dest: "{{ topic_aide_unit_dir }}/aide-check.service"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      notify:
+        - "topic_aide unit changed"
+
+    - name: "topic_aide | install aide-check.timer"
+      ansible.builtin.copy:
+        src: "aide-check.timer"
+        dest: "{{ topic_aide_unit_dir }}/aide-check.timer"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      notify:
+        - "topic_aide unit changed"
+
+    - name: "topic_aide | install /etc/profile.d/aide-alert.sh (optional)"
+      ansible.builtin.copy:
+        src: "aide-alert.sh"
+        dest: "{{ topic_aide_profile_d_dir }}/aide-alert.sh"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      when: topic_aide_install_alert_banner | bool
+      notify:
+        - "topic_aide banner changed"
+
+    - name: "topic_aide | remove /etc/profile.d/aide-alert.sh when toggle is false"
+      ansible.builtin.file:
+        path: "{{ topic_aide_profile_d_dir }}/aide-alert.sh"
+        state: absent
+      become: true
+      when: not (topic_aide_install_alert_banner | bool)
+
+    - name: "topic_aide | append managed scope-tuning block to /etc/aide.conf"
+      ansible.builtin.blockinfile:
+        path: "{{ topic_aide_conf_path }}"
+        marker: "{{ topic_aide_scope_marker }}"
+        block: "{{ topic_aide_scope_block }}"
+        insertafter: EOF
+        create: false
+        owner: "{{ topic_aide_expected_conf_owner }}"
+        group: "{{ topic_aide_expected_conf_group }}"
+        mode: "0600"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      register: scope_block_result
+
+    - name: "topic_aide | validate /etc/aide.conf parses (aide --config-check)"
+      ansible.builtin.command:
+        argv:
+          - aide
+          - "--config-check"
+      register: config_check_result
+      changed_when: false
+      failed_when: config_check_result.rc != 0
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_aide | flush handlers (load policy and reload units before enabling timer)"
+      ansible.builtin.meta: flush_handlers
+
+    - name: "topic_aide | check database presence"
+      ansible.builtin.stat:
+        path: "{{ topic_aide_db_path }}"
+      register: post_install_db_stat
+      changed_when: false
+
+    - name: "topic_aide | baseline pause (operator-driven aide --init / rebaseline)"
+      ansible.builtin.pause:
+        prompt: |
+          {{ 'The AIDE database at ' + topic_aide_db_path + ' does not exist.'
+             if not (post_install_db_stat.stat.exists | default(false))
+             else 'The managed scope-tuning block changed /etc/aide.conf; the '
+                  + 'existing database no longer matches the tuned scope.' }}
+          Run the canonical baseline-refresh sequence in another shell now:
+
+            sudo -r sysadm_r -t sysadm_t aide --init
+            sudo -r sysadm_r -t sysadm_t mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+            sudo -r sysadm_r -t sysadm_t restorecon -Fv /var/lib/aide/aide.db.gz
+
+          Press ENTER to continue once the database is in place. The role
+          does not run aide --init itself because the operator owns the
+          baseline-content decision; the first baseline and any rebaseline
+          are operator-driven and not part of the idempotent flow.
+      when:
+        - (not (post_install_db_stat.stat.exists | default(false)))
+          or (scope_block_result.changed | default(false))
+
+    - name: "topic_aide | enable + start aide-check.timer"
+      ansible.builtin.systemd:
+        name: "aide-check.timer"
+        enabled: true
+        state: started
+      become: true
+
+    - name: "topic_aide | read most-recent service exit status"
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - "show"
+          - "-p"
+          - "ExecMainStatus"
+          - "--value"
+          - "aide-check.service"
+      register: live_exec_status
+      changed_when: false
+
+    - name: "topic_aide | read AVC count since boot"
+      ansible.builtin.shell: >
+        ausearch -m AVC,USER_AVC -ts boot
+        | grep -cE '(aide_t|aide_exec_t|aide_db_t|aide_log_t|aide_conf_t)'
+        || true
+      args:
+        executable: /bin/bash
+      register: avc_count
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_aide | report live state"
+      ansible.builtin.debug:
+        msg: >
+          aide-check.service ExecMainStatus={{ live_exec_status.stdout | trim }},
+          AVC count since boot={{ (avc_count.stdout | default('0')) | trim }}.
+
+  rescue:
+
+    - name: "topic_aide | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_aide apply step failed. Auto-rollback is intentionally
+          not performed; rolling back the four artefacts requires an
+          operator decision about which stage to revert (banner only, or
+          banner plus CIL plus units, or all three plus the package).
+          See the topic Reference under "Idempotence and rollback" for
+          the three-stage rollback sequence.
+
+  tags:
+    - topic_aide
+    - apply
+
+- name: "topic_aide | flush handlers before verify"
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - topic_aide
+    - apply
+
+- name: "topic_aide | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_aide
+    - verify

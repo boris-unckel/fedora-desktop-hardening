@@ -1,0 +1,165 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_flatpak_audio_sandbox
+# Pattern: Preflight -> Modify (single CIL push) -> Verify
+# Idempotent: yes (re-applying does not change state on a host already
+# in the end-state; ansible.builtin.copy converges on byte-for-byte
+# content match and the semodule install task is creates-guarded). See
+# README.md "Idempotence notes".
+#
+# Modify ordering invariant:
+#   1. Preflight (OS family, package presence, operator-mapping
+#      applicability gate, audio-flatpak inventory recon, pre-load
+#      sesearch probe, pre-hardening sanity baseline).
+#   2. Re-install audit anchor: when an existing module slot is found
+#      under /var/lib/selinux/targeted/active/modules/400/, copy the
+#      currently installed CIL source to
+#      /root/flatpak_audio_sandbox.cil.pre-reinstall before any new
+#      content is written.
+#   3. Copy CIL source to /root/flatpak_audio_sandbox.cil with explicit
+#      0644 root:root (operator UMASK 0027 reflex).
+#   4. semodule -X 400 -i, creates-guarded against the priority-400
+#      module slot under /var/lib/selinux/targeted/active/modules/.
+#   5. Post-load sesearch probe asserts the allow surface is now
+#      present in the loaded policy.
+#
+# No drop-in push step. No semanage fcontext. No restorecon. No
+# systemctl daemon-reload. No service restart. No flatpak run trigger
+# from inside the role.
+
+- name: "topic_flatpak_audio_sandbox | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_flatpak_audio_sandbox
+    - preflight
+
+- name: "topic_flatpak_audio_sandbox | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_flatpak_audio_sandbox
+    - probe
+
+- name: "topic_flatpak_audio_sandbox | apply configuration"
+  block:
+
+    - name: "topic_flatpak_audio_sandbox | check existing module slot"
+      ansible.builtin.stat:
+        path: "/var/lib/selinux/targeted/active/modules/{{ topic_flatpak_audio_sandbox_cil_priority }}/{{ topic_flatpak_audio_sandbox_cil_module_name }}/cil"
+      register: existing_module_slot
+      changed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      when:
+        - not (topic_flatpak_audio_sandbox_already_closed | default(false) | bool)
+
+    - name: "topic_flatpak_audio_sandbox | re-install audit anchor (backup currently installed CIL source)"
+      ansible.builtin.copy:
+        src: "/var/lib/selinux/targeted/active/modules/{{ topic_flatpak_audio_sandbox_cil_priority }}/{{ topic_flatpak_audio_sandbox_cil_module_name }}/cil"
+        dest: "{{ topic_flatpak_audio_sandbox_cil_source_backup_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      when:
+        - not (topic_flatpak_audio_sandbox_already_closed | default(false) | bool)
+        - existing_module_slot.stat.exists | default(false)
+
+    - name: "topic_flatpak_audio_sandbox | install CIL source"
+      ansible.builtin.copy:
+        src: "{{ topic_flatpak_audio_sandbox_cil_module_name }}.cil"
+        dest: "{{ topic_flatpak_audio_sandbox_cil_source_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      when:
+        - not (topic_flatpak_audio_sandbox_already_closed | default(false) | bool)
+
+    - name: "topic_flatpak_audio_sandbox | install CIL module at priority {{ topic_flatpak_audio_sandbox_cil_priority }}"
+      ansible.builtin.command:
+        argv:
+          - semodule
+          - "-X"
+          - "{{ topic_flatpak_audio_sandbox_cil_priority }}"
+          - "-i"
+          - "{{ topic_flatpak_audio_sandbox_cil_source_path }}"
+        creates: "/var/lib/selinux/targeted/active/modules/{{ topic_flatpak_audio_sandbox_cil_priority }}/{{ topic_flatpak_audio_sandbox_cil_module_name }}/cil"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      when:
+        - not (topic_flatpak_audio_sandbox_already_closed | default(false) | bool)
+
+    - name: "topic_flatpak_audio_sandbox | post-load sesearch on functional surface"
+      ansible.builtin.command:
+        argv:
+          - sesearch
+          - "-A"
+          - "-s"
+          - "staff_t"
+          - "-t"
+          - "device_t"
+          - "-c"
+          - "dir"
+          - "-p"
+          - "mounton"
+      register: post_rule
+      changed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_flatpak_audio_sandbox | assert post-load allow surface is present"
+      ansible.builtin.assert:
+        that:
+          - (post_rule.stdout | length) > 0
+        fail_msg: |
+          flatpak-audio-sandbox: post-load sesearch did not confirm the
+          allow surface in the loaded policy. The semodule install
+          step did not converge; investigate the policy store and the
+          module slot under
+          /var/lib/selinux/targeted/active/modules/{{ topic_flatpak_audio_sandbox_cil_priority }}/{{ topic_flatpak_audio_sandbox_cil_module_name }}/.
+
+    - name: "topic_flatpak_audio_sandbox | report end-state"
+      ansible.builtin.debug:
+        msg: |
+          flatpak-audio-sandbox end-state snapshot:
+          rule_present={{ (post_rule.stdout | length) > 0 }},
+          obsolescence_no_op={{ topic_flatpak_audio_sandbox_already_closed | default(false) }}.
+
+  rescue:
+
+    - name: "topic_flatpak_audio_sandbox | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_flatpak_audio_sandbox apply step failed. Auto-rollback
+          is intentionally not performed; the single-stage rollback
+          (`semodule -X {{ topic_flatpak_audio_sandbox_cil_priority }} -r {{ topic_flatpak_audio_sandbox_cil_module_name }}` under sysadm_r)
+          is operator-driven and is documented in the topic Reference.
+          Boot-failure risk for this topic is structurally zero — the
+          single allow rule grants access on a user-process-side
+          bind-mount step performed by bwrap from a desktop role that
+          is not active during the boot sequence.
+
+  tags:
+    - topic_flatpak_audio_sandbox
+    - apply
+
+- name: "topic_flatpak_audio_sandbox | flush handlers before verify"
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - topic_flatpak_audio_sandbox
+    - apply
+
+- name: "topic_flatpak_audio_sandbox | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_flatpak_audio_sandbox
+    - verify

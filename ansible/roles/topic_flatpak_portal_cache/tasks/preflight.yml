@@ -1,0 +1,153 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_flatpak_portal_cache. The role applies on
+# Fedora 44+ desktops with a graphical session where the operator's
+# user-systemd instance is addressable in the current Ansible connection
+# mode. The role completes (and does not abort) on a host whose Flatpak
+# inventory has no entries with portal-mediated access; pre-applying the
+# reset is a clean no-op in that case.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_flatpak_portal_cache targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }}
+      {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | required packages present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_flatpak_portal_cache_required_packages }}"
+
+- name: "preflight | record GTK/GNOME backend slot disposition (informational)"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: backend_pkg_check
+  changed_when: false
+  failed_when: false
+  loop: "{{ topic_flatpak_portal_cache_backend_packages }}"
+
+- name: "preflight | report backend slot disposition"
+  ansible.builtin.debug:
+    msg: |
+      flatpak-portal-cache: GTK/GNOME backend slot:
+      {% for r in backend_pkg_check.results %}
+        {{ r.item }}: {{ 'installed' if r.rc == 0 else 'absent' }}
+      {% endfor %}
+      Either backend satisfies the slot; the cache lifecycle is owned by
+      the frontend xdg-document-portal component.
+
+- name: "preflight | operator runtime SELinux mapping"
+  ansible.builtin.command:
+    argv:
+      - id
+      - "-Z"
+  register: id_z_result
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | operator-mapping applicability note"
+  ansible.builtin.debug:
+    msg: |
+      flatpak-portal-cache: operator runtime SELinux mapping does not
+      contain the canonical anchor
+      ('{{ topic_flatpak_portal_cache_expected_seuser_substring }}').
+      Detected: '{{ id_z_result.stdout | trim }}'.
+      The cache-lifecycle behaviour is identical on this host, but this
+      Topic's framing assumes a staff_u-mapped login; an unconfined_u
+      operator's surrounding hardening posture is owned by separate
+      articles. The role completes; it does not abort on this branch.
+  when:
+    - topic_flatpak_portal_cache_expected_seuser_substring
+        not in (id_z_result.stdout | default(''))
+
+- name: "preflight | user-systemd addressability check"
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - "--user"
+      - "is-system-running"
+  register: user_systemd_addressable
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | abort if user-systemd is not addressable"
+  ansible.builtin.fail:
+    msg: |
+      flatpak-portal-cache: the operator's user-systemd instance is not
+      addressable in the current Ansible connection mode (typical for a
+      non-graphical SSH login without `loginctl enable-linger`). The
+      Topic does not apply in this connection mode; re-invoke from a
+      connection that propagates the user-bus DBUS address.
+  when:
+    - user_systemd_addressable.rc != 0
+
+- name: "preflight | enumerate flatpak application inventory"
+  ansible.builtin.command:
+    argv:
+      - flatpak
+      - list
+      - "--app"
+      - "--columns=application,permissions"
+  register: flatpak_apps_result
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | pre-reset cache snapshot — persistent class"
+  ansible.builtin.command:
+    argv:
+      - flatpak
+      - documents
+      - list
+  register: pre_reset_persistent
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | pre-reset cache snapshot — FUSE by-app inventory"
+  ansible.builtin.command:
+    argv:
+      - ls
+      - "-la"
+      - "{{ topic_flatpak_portal_cache_fuse_by_app_path }}"
+  register: pre_reset_fuse
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report pre-reset cache snapshot"
+  ansible.builtin.debug:
+    msg: |
+      Pre-reset cache snapshot (informational, non-fatal):
+      persistent_class:
+        {{ pre_reset_persistent.stdout | default('(empty)') | trim }}
+      fuse_by_app:
+        {{ pre_reset_fuse.stdout | default('(by-app/ does not exist)') | trim }}
+
+- name: "preflight | enumerate system-wide override store (sysadm_t)"
+  ansible.builtin.command:
+    argv:
+      - ls
+      - "/var/lib/flatpak/overrides/"
+  register: override_store_listing
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report override-store inventory"
+  ansible.builtin.debug:
+    msg: |
+      System-wide override store at /var/lib/flatpak/overrides/:
+      {{ override_store_listing.stdout | default('(empty or unreadable)') | trim }}

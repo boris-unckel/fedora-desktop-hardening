@@ -1,0 +1,222 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_alsa_state
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying does not change state on a correctly
+# configured host; see README.md "Idempotence notes").
+#
+# Modify ordering invariant:
+#   1. Push CIL source to /usr/local/share/selinux/.
+#   2. Install CIL module via semodule -X 400 -i (handler).
+#   3. flush_handlers — the CIL must be loaded before the NNP drop-in.
+#   4. Push the three drop-in INI files.
+#   5. restorecon on the drop-in files (handler).
+#   6. Daemon-reload + restart (handlers).
+# A change to any of the four shipping artefacts notifies the
+# appropriate handler chain. Live-state probe is read-only.
+
+- name: "topic_alsa_state | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_alsa_state
+    - preflight
+
+- name: "topic_alsa_state | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_alsa_state
+    - probe
+
+- name: "topic_alsa_state | apply configuration"
+  block:
+
+    - name: "topic_alsa_state | CIL publish directory present"
+      ansible.builtin.file:
+        path: "{{ topic_alsa_state_cil_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "topic_alsa_state | install CIL source"
+      ansible.builtin.copy:
+        src: "{{ topic_alsa_state_cil_module_name }}.cil"
+        dest: "{{ topic_alsa_state_cil_dir }}/{{ topic_alsa_state_cil_module_name }}.cil"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_alsa_state cil changed"
+
+    - name: "topic_alsa_state | flush handlers (CIL must be loaded before NNP drop-in)"
+      ansible.builtin.meta: flush_handlers
+
+    - name: "topic_alsa_state | drop-in directory present"
+      ansible.builtin.file:
+        path: "{{ topic_alsa_state_dropin_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "topic_alsa_state | install 99-hardening.conf"
+      ansible.builtin.copy:
+        src: "99-hardening.conf"
+        dest: "{{ topic_alsa_state_dropin_dir }}/99-hardening.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_alsa_state dropin changed"
+
+    - name: "topic_alsa_state | install 99-nnp.conf"
+      ansible.builtin.copy:
+        src: "99-nnp.conf"
+        dest: "{{ topic_alsa_state_dropin_dir }}/99-nnp.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_alsa_state dropin changed"
+
+    - name: "topic_alsa_state | install 99-process-restrict.conf"
+      ansible.builtin.copy:
+        src: "99-process-restrict.conf"
+        dest: "{{ topic_alsa_state_dropin_dir }}/99-process-restrict.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_alsa_state dropin changed"
+
+    - name: "topic_alsa_state | read live MainPID"
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - "show"
+          - "-p"
+          - "MainPID"
+          - "--value"
+          - "alsa-state.service"
+      register: live_main_pid
+      changed_when: false
+
+    - name: "topic_alsa_state | read live SELinux domain"
+      ansible.builtin.shell: >
+        awk -F: '{print $3}' /proc/{{ live_main_pid.stdout | trim }}/attr/current
+      args:
+        executable: /bin/bash
+      register: live_domain
+      changed_when: false
+      failed_when: false
+      when: (live_main_pid.stdout | trim) not in ['', '0']
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_alsa_state | read live UID/GID"
+      ansible.builtin.shell: >
+        awk '/^Uid:/{print "Uid="$2} /^Gid:/{print "Gid="$2}'
+        /proc/{{ live_main_pid.stdout | trim }}/status
+      args:
+        executable: /bin/bash
+      register: live_uid_gid
+      changed_when: false
+      failed_when: false
+      when: (live_main_pid.stdout | trim) not in ['', '0']
+
+    - name: "topic_alsa_state | read live comm (defeats dash-prefix exit-masking)"
+      ansible.builtin.shell: >
+        cat /proc/{{ live_main_pid.stdout | trim }}/comm
+      args:
+        executable: /bin/bash
+      register: live_comm
+      changed_when: false
+      failed_when: false
+      when: (live_main_pid.stdout | trim) not in ['', '0']
+
+    - name: "topic_alsa_state | read AVC count since boot"
+      ansible.builtin.shell: >
+        ausearch -m AVC,USER_AVC -ts boot
+        | grep -cE '(alsa_t|nnp_transition|alsa-state|alsactl)'
+        || true
+      args:
+        executable: /bin/bash
+      register: avc_count
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_alsa_state | read SECCOMP count since boot"
+      ansible.builtin.shell: >
+        ausearch -m seccomp -ts boot
+        | grep -c 'comm="alsactl"'
+        || true
+      args:
+        executable: /bin/bash
+      register: seccomp_count
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_alsa_state | read post-deploy saved-state file"
+      ansible.builtin.shell: >
+        stat -c '%s' {{ topic_alsa_state_state_file }} || true
+      args:
+        executable: /bin/bash
+      register: post_deploy_state_file
+      changed_when: false
+      failed_when: false
+
+    - name: "topic_alsa_state | report live state"
+      ansible.builtin.debug:
+        msg: >
+          alsa-state MainPID={{ live_main_pid.stdout | trim }},
+          SELinux domain={{ (live_domain.stdout | default('?')) | trim }},
+          live UID/GID={{ (live_uid_gid.stdout | default('?')) | trim | replace('\n', ' ') }},
+          live comm={{ (live_comm.stdout | default('?')) | trim }},
+          AVC count since boot={{ (avc_count.stdout | default('0')) | trim }},
+          SECCOMP count since boot={{ (seccomp_count.stdout | default('0')) | trim }},
+          asound.state size={{ (post_deploy_state_file.stdout | default('?')) | trim }} bytes.
+
+  rescue:
+
+    - name: "topic_alsa_state | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_alsa_state apply step failed. Auto-rollback is intentionally
+          not performed; rolling back the four artefacts requires an
+          operator decision about which stage to revert (process-
+          restrictions only, or NNP plus CIL unload as well, or all
+          three drop-ins). See the topic Reference under "Verification"
+          for the three-stage rollback sequence and the recover-from-
+          boot-failure how-to for the boot-failure variant.
+
+  tags:
+    - topic_alsa_state
+    - apply
+
+- name: "topic_alsa_state | flush handlers before verify"
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - topic_alsa_state
+    - apply
+
+- name: "topic_alsa_state | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_alsa_state
+    - verify

@@ -1,0 +1,155 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_dbus_broker. Block apply when the host
+# family is wrong, when the dbus-broker vendor unit is missing, when the
+# dbus-broker package is not installed, when matchpathcon for the broker
+# binary or launcher wrapper does not return dbusd_exec_t. Stock-policy
+# nnp_transition pre-test and the F44 stock-unit minimal baseline are
+# captured as non-fatal reports. The pre-deploy system-bus baseline
+# (busctl --system list, journalctl unit and error-stream tails) is
+# captured as facts for post-deploy comparison.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_dbus_broker targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | dbus-broker.service vendor unit present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/dbus-broker.service"
+  register: vendor_unit
+  failed_when: not (vendor_unit.stat.exists | default(false))
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_dbus_broker_required_packages }}"
+
+- name: "preflight | F44 stock-unit minimal baseline directive recon"
+  ansible.builtin.shell: >
+    grep -E
+    '^(RuntimeDirectory|StateDirectory|ConfigurationDirectory|LogsDirectory|ProtectSystem|ProtectHome|ProtectKernel|ProtectControl|ProtectClock|ProtectHostname|ProtectProc|PrivateTmp|PrivateDevices|PrivateUsers|RestrictNamespaces|RestrictRealtime|RestrictSUIDSGID|RestrictAddressFamilies|LockPersonality|MemoryDenyWriteExecute|SystemCallFilter|SystemCallArchitectures|DeviceAllow|CapabilityBoundingSet|NoNewPrivileges|AmbientCapabilities|UMask|ProcSubset|User|Group|Type|ExecStart|BusName|Sockets)='
+    /usr/lib/systemd/system/dbus-broker.service
+    || true
+  args:
+    executable: /bin/bash
+  register: stock_directive_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report stock unit directive recon"
+  ansible.builtin.debug:
+    msg: >
+      Stock dbus-broker.service minimal baseline directives (non-fatal
+      report; a future package version that adds a directive overlapping
+      a topic-owned directive requires manifest revision before applying
+      this role): {{ stock_directive_recon.stdout | trim }}.
+
+- name: "preflight | matchpathcon for broker binaries"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "{{ item }}"
+  register: matchpathcon_check
+  changed_when: false
+  failed_when: false
+  loop:
+    - "/usr/bin/dbus-broker-launch"
+    - "/usr/bin/dbus-broker"
+
+- name: "preflight | fail-fast if matchpathcon does not return dbusd_exec_t"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon {{ item.item }} returned a non-dbusd_exec_t mapping:
+      {{ item.stdout | trim }}
+      The stock fcontext for the broker binary has been displaced. The
+      manifest needs revision before applying this role. Open a fresh
+      topic session against an extended manifest.
+  when: (item.stdout | regex_search('dbusd_exec_t')) is none
+  loop: "{{ matchpathcon_check.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "preflight | report matchpathcon outcomes"
+  ansible.builtin.debug:
+    msg: >
+      matchpathcon {{ item.item }}: {{ item.stdout | trim }}.
+  loop: "{{ matchpathcon_check.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "preflight | SELinux nnp_transition pre-test (expected empty)"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "init_t"
+      - "-t"
+      - "{{ topic_dbus_broker_expected_selinux_domain }}"
+      - "-c"
+      - "process2"
+      - "-p"
+      - "nnp_transition"
+  register: nnp_check
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report SELinux nnp_transition pre-test outcome"
+  ansible.builtin.debug:
+    msg: >
+      SELinux nnp_transition pre-test for
+      init_t -> {{ topic_dbus_broker_expected_selinux_domain }}:
+      {{ 'EMPTY (expected; topic CIL is required and will be installed)'
+         if (nnp_check.stdout | trim) == '' else
+         'NON-EMPTY (the rule is already in policy; topic CIL install at '
+         + 'priority 400 is idempotent and overlays without harm)' }}.
+
+- name: "preflight | system-bus baseline | busctl --system list"
+  ansible.builtin.shell: >
+    busctl --system list || true
+  args:
+    executable: /bin/bash
+  register: preflight_busctl
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | system-bus baseline | journalctl unit tail"
+  ansible.builtin.shell: >
+    journalctl -b 0 -u dbus-broker.service --no-pager | tail -20 || true
+  args:
+    executable: /bin/bash
+  register: preflight_journal_unit
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | system-bus baseline | journalctl error stream tail"
+  ansible.builtin.shell: >
+    journalctl -b 0 -p err -t dbus-broker --no-pager | tail -20 || true
+  args:
+    executable: /bin/bash
+  register: preflight_journal_err
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report system-bus baseline"
+  ansible.builtin.debug:
+    msg: >
+      Pre-deploy system-bus baseline (non-fatal report; a non-empty error
+      stream signals a pre-existing broker issue that the operator should
+      investigate before deploying this role): busctl rc={{ preflight_busctl.rc }};
+      unit-journal-tail-bytes={{ (preflight_journal_unit.stdout | default('') | length) }};
+      err-journal-tail-bytes={{ (preflight_journal_err.stdout | default('') | length) }}.

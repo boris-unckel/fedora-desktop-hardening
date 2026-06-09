@@ -1,0 +1,218 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_mozilla_thunderbird. The role applies on
+# Fedora 44+ desktops where the operator login is mapped to staff_u, the
+# system-wide Flatpak install is present with the fedora (Fedora-OCI) remote
+# configured, the flatpak-audio-sandbox SELinux allow rule has been deployed,
+# the flatpak-oci-pull-dbus SELinux allow rule has been deployed, no live
+# Thunderbird process (host-side or sandbox-side) is running, and the
+# four-package RPM removal set carries no SONAME-level reverse-dependency.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_mozilla_thunderbird targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }}
+      {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | required packages present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_mozilla_thunderbird_required_packages }}"
+
+- name: "preflight | operator runtime SELinux mapping"
+  ansible.builtin.command:
+    argv:
+      - id
+      - "-Z"
+  register: id_z_result
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | operator-mapping applicability note"
+  ansible.builtin.debug:
+    msg: |
+      topic_mozilla_thunderbird: operator runtime SELinux mapping does not
+      contain the canonical anchor
+      ('{{ topic_mozilla_thunderbird_expected_seuser_substring }}').
+      Detected: '{{ id_z_result.stdout | trim }}'.
+      The end-state behaves identically on this host, but this topic's framing
+      assumes a staff_u-mapped login; an unconfined_u operator's surrounding
+      hardening posture is owned by separate articles. The role completes; it
+      does not abort on this branch.
+  when:
+    - topic_mozilla_thunderbird_expected_seuser_substring
+        not in (id_z_result.stdout | default(''))
+
+- name: "preflight | fedora remote presence"
+  ansible.builtin.command:
+    argv:
+      - flatpak
+      - remotes
+      - "--columns=name,url"
+  register: flatpak_remote_listing
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | abort if fedora remote is missing"
+  ansible.builtin.fail:
+    msg: |
+      topic_mozilla_thunderbird: the fedora remote is not configured on this
+      host. Configure it (under role-switched sysadm_t) with the canonical
+      Fedora-OCI URL containing
+      '{{ topic_mozilla_thunderbird_fedora_remote_url_substring }}' before
+      applying this topic; the configuration of the system-wide fedora remote
+      is owned by operator setup outside this role.
+  when:
+    - topic_mozilla_thunderbird_fedora_remote_name
+        not in (flatpak_remote_listing.stdout | default(''))
+
+- name: "preflight | fedora remote URL transport check"
+  ansible.builtin.fail:
+    msg: |
+      topic_mozilla_thunderbird: the fedora remote is configured but its URL
+      does not contain the canonical Fedora-OCI substring
+      '{{ topic_mozilla_thunderbird_fedora_remote_url_substring }}'. This
+      topic's deploy depends on the OCI transport
+      (oci+https://registry.fedoraproject.org); refuse to proceed against a
+      non-OCI fedora remote.
+  when:
+    - topic_mozilla_thunderbird_fedora_remote_name
+        in (flatpak_remote_listing.stdout | default(''))
+    - topic_mozilla_thunderbird_fedora_remote_url_substring
+        not in (flatpak_remote_listing.stdout | default(''))
+
+- name: "preflight | OCI-pull DBus SELinux allow rule present"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "sysadm_t"
+      - "-t"
+      - "unconfined_dbusd_t"
+      - "-c"
+      - "unix_stream_socket"
+      - "-p"
+      - "connectto"
+  register: oci_pull_dbus_check
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | abort if OCI-pull DBus allow rule is missing"
+  ansible.builtin.fail:
+    msg: |
+      topic_mozilla_thunderbird: the (allow sysadm_t unconfined_dbusd_t
+      (unix_stream_socket (connectto))) SELinux rule is missing from the
+      loaded policy. Apply the flatpak-oci-pull-dbus sibling topic before
+      this topic; without the rule the first system-install of any ref from
+      an OCI-typed remote (including this topic's fedora remote) fails at
+      the DBus token-request stage.
+  when:
+    - (oci_pull_dbus_check.stdout | default('') | trim) == ''
+
+- name: "preflight | audio-sandbox SELinux allow rule present"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "staff_t"
+      - "-t"
+      - "device_t"
+      - "-c"
+      - "dir"
+      - "-p"
+      - "mounton"
+  register: audio_sandbox_check
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | abort if audio-sandbox allow rule is missing"
+  ansible.builtin.fail:
+    msg: |
+      topic_mozilla_thunderbird: the (allow staff_t device_t (dir (mounton)))
+      SELinux rule is missing from the loaded policy. Apply the
+      flatpak-audio-sandbox sibling topic before this topic; without the
+      rule the application's bwrap-launched start fails at the audio
+      bind-mount stage with `Can't bind mount /oldroot/dev/snd on
+      /newroot/dev/snd: Unable to mount source on destination: Permission
+      denied`.
+  when:
+    - (audio_sandbox_check.stdout | default('') | trim) == ''
+
+- name: "preflight | SONAME-aware reverse-dependency probe (host-side .so files)"
+  ansible.builtin.shell: >
+    set -e ;
+    pkg="{{ item }}" ;
+    if ! rpm -q "$pkg" >/dev/null 2>&1 ; then
+      echo "absent" ;
+      exit 0 ;
+    fi ;
+    sonames=$(rpm -ql "$pkg" 2>/dev/null | grep '\.so' || true) ;
+    if [ -z "$sonames" ] ; then
+      echo "no_so_files" ;
+      exit 0 ;
+    fi ;
+    deps="" ;
+    for f in $sonames ; do
+      base=$(basename "$f") ;
+      consumer=$(rpm -q --whatrequires "$base()(64bit)" 2>/dev/null
+                 | grep -v '^no package requires' || true) ;
+      if [ -n "$consumer" ] ; then
+        deps="$deps $base:$consumer" ;
+      fi ;
+    done ;
+    if [ -n "$deps" ] ; then
+      echo "REVERSE_DEPS:$deps" ;
+      exit 1 ;
+    fi ;
+    echo "clean"
+  register: soname_probe
+  changed_when: false
+  failed_when: soname_probe.rc != 0
+  loop: "{{ topic_mozilla_thunderbird_rpm_removal_set }}"
+
+- name: "preflight | live Thunderbird process probe (host-side)"
+  ansible.builtin.shell: >
+    pgrep -u "{{ ansible_user_id }}"
+          -f '/usr/(lib64|bin)/thunderbird/' || true
+  register: pgrep_host_thunderbird
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | live Thunderbird process probe (sandbox-side)"
+  ansible.builtin.shell: >
+    pgrep -u "{{ ansible_user_id }}"
+          -f 'net\.thunderbird\.Thunderbird' || true
+  register: pgrep_sandbox_thunderbird
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | abort if a live Thunderbird process is detected"
+  ansible.builtin.fail:
+    msg: |
+      topic_mozilla_thunderbird: a live Thunderbird process was detected on
+      the host. Close every running Thunderbird application instance
+      (host-side and sandbox-side) before applying this topic; the
+      profile-seeding stage relies on no Thunderbird process holding the
+      profile lock at apply time.
+      host-side pgrep output: {{ pgrep_host_thunderbird.stdout | trim }}
+      sandbox-side pgrep output: {{ pgrep_sandbox_thunderbird.stdout | trim }}
+  when:
+    - (pgrep_host_thunderbird.stdout | default('') | trim) != ''
+      or (pgrep_sandbox_thunderbird.stdout | default('') | trim) != ''

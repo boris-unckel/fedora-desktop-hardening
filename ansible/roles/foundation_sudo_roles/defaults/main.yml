@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for foundation_sudo_roles. Override in group_vars or playbook.
+
+# Operator account that gets mapped to staff_u. No default — the account
+# name is host-specific and the preflight asserts that this is set.
+# foundation_sudo_roles_user: ""
+
+# MLS/MCS range for the per-user mapping. The Fedora targeted policy default
+# spans the full categorized range; this matches what the distribution maps
+# unconfined_u to.
+foundation_sudo_roles_mls_range: "s0-s0:c0.c1023"
+
+# CIL module install path and priority.
+foundation_sudo_roles_cil_module_path: "/usr/local/share/selinux/staff_extras.cil"
+foundation_sudo_roles_cil_priority: 400
+
+# Expected sudoers secure_path. The end-state value excludes any third-party
+# package paths that the distribution sometimes appends (notably snap).
+foundation_sudo_roles_secure_path: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

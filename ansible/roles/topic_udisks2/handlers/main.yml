@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_udisks2.
+#
+# A change to any of the three drop-in files triggers a daemon-reload
+# followed by a unit restart. The two handlers are wired so that the
+# reload always runs before the restart on the same event chain.
+
+- name: "topic_udisks2 | daemon-reload"
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "topic_udisks2 dropin changed"
+
+- name: "topic_udisks2 | restart udisks2"
+  ansible.builtin.systemd:
+    name: "udisks2.service"
+    state: restarted
+  listen: "topic_udisks2 dropin changed"

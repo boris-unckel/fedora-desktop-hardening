@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# System-tier side effect: the real layered reboot. This runs after the
+# idempotence check (so the second converge proved a stable end state on the
+# running kernel) and before verify (which proves every topic survived the
+# boot). It is the only place in the suite where the fully hardened host
+# performs a real boot — the boot-failure class's acceptance test.
+#
+# Boot-survival is the binary gate: the host must re-establish the connection
+# within the timeout and reach a booted state. A host that never returns is a
+# boot-survival failure (the documented worst case); the reusable base snapshot
+# is unaffected and the managed node is torn down by the scenario either way.
+- name: Real layered reboot and boot-survival assertion
+  hosts: all
+  become: true
+  # By this point the connection user is mapped to staff_u, so plain `become`
+  # lands in staff_sudo_t, which lacks DAC_OVERRIDE and cannot read the
+  # umask-0027 AnsiballZ module file in the connection user's ~/.ansible/tmp
+  # (the staff_t DAC-caps trap). The role switch to sysadm_t has the caps. The
+  # foundation reboot avoids this only because it runs before the staff_u
+  # mapping takes effect.
+  become_flags: "-r sysadm_r -t sysadm_t"
+  gather_facts: false
+  tasks:
+    - name: Reboot the cumulative hardened host
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+        post_reboot_delay: 10
+
+    - name: Wait for the system to settle into a booted state
+      ansible.builtin.command: systemctl is-system-running --wait
+      register: is_system_running
+      changed_when: false
+      failed_when: false
+
+    - name: Collect any failed units for the record
+      ansible.builtin.command: systemctl --failed --no-legend --plain
+      register: failed_units
+      changed_when: false
+      failed_when: false
+
+    # Self-documenting boot-failure capture: for every unit that failed at boot,
+    # record its status (which carries the namespace/exit code, e.g. the
+    # 226/NAMESPACE class) and the tail of its boot journal. This turns a
+    # boot-survival failure into an actionable record in the run log instead of
+    # a bare unit name, with no extra round trip to a kept node.
+    - name: Capture boot-time diagnostics for any failed unit
+      ansible.builtin.shell: |
+        set +e
+        for u in $(systemctl --failed --no-legend --plain | awk '{print $1}'); do
+          echo "===== ${u} ====="
+          systemctl status "${u}" --no-pager -l 2>&1 | head -n 20
+          echo "----- journal -b -----"
+          journalctl -b -u "${u}" --no-pager 2>&1 | tail -n 40
+        done
+        exit 0
+      args:
+        executable: /bin/bash
+      register: failed_unit_diag
+      changed_when: false
+
+    - name: Report boot-time diagnostics for failed units
+      ansible.builtin.debug:
+        var: failed_unit_diag.stdout_lines
+      when: failed_units.stdout_lines | default([]) | length > 0
+
+    - name: Report boot-survival state
+      ansible.builtin.debug:
+        msg:
+          - "boot-survival: host returned from reboot"
+          - "is-system-running = {{ is_system_running.stdout | trim }}"
+          - "failed units = {{ failed_units.stdout_lines | default([]) }}"
+
+    - name: Boot-survival gate — the host returned and reached a booted state
+      ansible.builtin.assert:
+        that:
+          - is_system_running.stdout is search('running|degraded')
+        success_msg: "boot-survival OK: is-system-running={{ is_system_running.stdout | trim }}"
+        fail_msg: >-
+          boot-survival FAILED: is-system-running={{ is_system_running.stdout | trim }};
+          failed units={{ failed_units.stdout_lines | default([]) }}

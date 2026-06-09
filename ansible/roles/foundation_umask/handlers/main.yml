@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# foundation_umask has no runtime handlers.
+#
+# /etc/login.defs is read by pam_umask at the start of each new login session.
+# No service restart is required for the change to take effect; the next login
+# inherits the new value, and existing sessions retain their inherited umask
+# until they end. A reboot is not required by this role.

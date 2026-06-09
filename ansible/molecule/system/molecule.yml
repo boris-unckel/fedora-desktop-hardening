@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# System-tier integration scenario. One cumulative managed node carries the
+# foundation tier plus every cloud-testable topic, then performs a real layered
+# reboot. This is the only level that exercises cross-topic interaction and a
+# real boot of the fully hardened host; containers cannot exercise the
+# SELinux-enforcing, PID-1, real-reboot behaviour the system under test depends
+# on, so the delegated driver provisions a real Hetzner Cloud VM via the shared
+# create/destroy playbooks.
+#
+# Flow: prepare (baseline capture + foundation + topic preconditions) ->
+# converge (apply the cumulative topic set) -> idempotence (zero changed) ->
+# side_effect (real reboot + boot-survival) -> verify (post-reboot persistence
+# of every topic's verify.sh, plus the security scores against the baseline).
+prerun: false
+dependency:
+  name: galaxy
+driver:
+  name: default
+platforms:
+  - name: managed-system
+    server_type: cpx21
+    image: fedora-44
+    location: ash
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/roles"
+    ANSIBLE_SKIP_TAGS: reboot-prompt
+  playbooks:
+    create: ../shared/create.yml
+    destroy: ../shared/destroy.yml
+    prepare: prepare.yml
+    converge: converge.yml
+    side_effect: side_effect.yml
+    verify: verify.yml
+  config_options:
+    defaults:
+      interpreter_python: auto_silent
+      host_key_checking: false
+verifier:
+  name: ansible
+scenario:
+  name: system
+  test_sequence:
+    - dependency
+    - destroy
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - side_effect
+    - verify
+    - destroy

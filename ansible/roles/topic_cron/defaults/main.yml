@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_cron. Override in group_vars or playbook.
+
+# Drop-in directory for crond.service.
+topic_cron_dropin_dir: "/etc/systemd/system/crond.service.d"
+
+# Priority-400 CIL publish directory.
+topic_cron_cil_dir: "/usr/local/share/selinux"
+
+# Required package: the daemon, the unit file, the SELinux service-
+# specific subtype set, and the default /etc/sysconfig/crond.
+topic_cron_required_packages:
+  - cronie
+
+# Topic-owned CIL module name and load priority.
+topic_cron_cil_module_name: "nnp_crond"
+topic_cron_cil_priority: 400
+
+# Daemon binary paths checked by matchpathcon. The canonical
+# (post-merge) path is /usr/bin/crond; the pre-merge ExecStart= path is
+# /usr/sbin/crond. The preflight runs both calls and requires
+# crond_exec_t from at least one as fail-fast.
+topic_cron_binary_canonical: "/usr/bin/crond"
+topic_cron_binary_pre_merge: "/usr/sbin/crond"
+topic_cron_expected_fcontext: "crond_exec_t"
+
+# Expected SELinux live domain of the daemon and the cronjob-spawn
+# child process.
+topic_cron_expected_selinux_domain: "crond_t"
+topic_cron_expected_cronjob_domain: "system_cronjob_t"
+
+# Expected effective values surfaced from `systemctl show --value`.
+topic_cron_expected_nnp: "yes"
+topic_cron_expected_mdwe: "yes"
+topic_cron_expected_protect_system: "full"
+topic_cron_expected_protect_home: "yes"
+topic_cron_expected_protect_kernel_tunables: "yes"
+topic_cron_expected_protect_kernel_modules: "yes"
+topic_cron_expected_protect_kernel_logs: "yes"
+topic_cron_expected_protect_control_groups: "yes"
+topic_cron_expected_private_tmp: "yes"
+topic_cron_expected_protect_clock: "yes"
+topic_cron_expected_protect_hostname: "yes"
+topic_cron_expected_lock_personality: "yes"
+topic_cron_expected_restrict_realtime: "yes"
+topic_cron_expected_restrict_suid_sgid: "yes"
+topic_cron_expected_syscall_architectures: "native"
+
+# RestrictAddressFamilies expected as the source-order four-element
+# multiset (the property is order-preserving on output).
+topic_cron_expected_restrict_address_families: "AF_UNIX AF_INET AF_INET6 AF_NETLINK"
+
+# CapabilityBoundingSet expected as a lowercase, alphabetically sorted
+# whitespace-separated list. The verify script normalises the observed
+# value before comparison.
+topic_cron_expected_cap_bounding_set_sorted: "cap_dac_read_search cap_setgid cap_setuid"
+
+# SystemCallFilter length-plus-anchor check. The seed @system-service
+# group expands to several hundred syscalls; 200 is a conservative
+# lower bound on the resolved value's length.
+topic_cron_expected_scf_length_min: 200
+topic_cron_expected_scf_anchor_tokens:
+  - "@system-service"
+  - "~@privileged"
+  - setresuid
+  - setgroups

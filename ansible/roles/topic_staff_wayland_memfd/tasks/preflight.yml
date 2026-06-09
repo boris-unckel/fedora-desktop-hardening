@@ -1,0 +1,163 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_staff_wayland_memfd. Block apply when the
+# host family is wrong, when any of the required compositor packages are
+# missing, or when the operator's runtime SELinux mapping is not staff_u.
+# Mark the apply step as a clean no-op when both permissions of the
+# functional vector are already present as unconditional grants in the
+# loaded policy (the workaround-obsolescence path: a future stock-policy
+# update has shipped an equivalent grant and the topic-owned module is no
+# longer required). Emit an informational note when the operator session
+# is not a Wayland session — the gap is then unreachable, but the policy
+# patch is harmless and is applied pre-emptively.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_staff_wayland_memfd targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }}
+      {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | required packages present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_staff_wayland_memfd_required_packages }}"
+
+- name: "preflight | operator runtime SELinux mapping"
+  ansible.builtin.command:
+    argv:
+      - id
+      - "-Z"
+  register: id_z_result
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | applicability gate on operator mapping"
+  ansible.builtin.fail:
+    msg: |
+      staff-wayland-memfd: operator runtime SELinux mapping does not
+      match the applicability anchor
+      ('{{ topic_staff_wayland_memfd_expected_seuser_substring }}').
+      Detected: '{{ id_z_result.stdout | trim }}'.
+      The stock-policy gap is reachable only from the staff_u → staff_r
+      → staff_t desktop role-stack, where the session compositor runs in
+      staff_t; an unconfined_u operator already holds the equivalent
+      tmpfs_t file surface and does not need this topic.
+  when:
+    - topic_staff_wayland_memfd_expected_seuser_substring
+        not in (id_z_result.stdout | default(''))
+
+- name: "preflight | read operator session type"
+  ansible.builtin.command:
+    argv:
+      - loginctl
+      - show-session
+      - "{{ ansible_env.XDG_SESSION_ID | default('self') }}"
+      - "-p"
+      - "Type"
+      - "--value"
+  register: session_type_result
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report non-Wayland-session informational note"
+  ansible.builtin.debug:
+    msg: |
+      staff-wayland-memfd: the operator session type is reported as
+      '{{ session_type_result.stdout | default('(unknown)') | trim }}',
+      which is not '{{ topic_staff_wayland_memfd_expected_session_type }}'.
+      The stock-policy gap is reached on a Wayland session, where the
+      compositor maps client wl_shm memfd buffers; an X11 session routes
+      clients through Xwayland and does not exercise the path. The policy
+      patch is applied pre-emptively so a subsequent Wayland login does
+      not surface the gap.
+  when:
+    - (session_type_result.stdout | default('') | trim | lower)
+        != topic_staff_wayland_memfd_expected_session_type
+
+- name: "preflight | pre-load sesearch on functional surface (write)"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "staff_t"
+      - "-t"
+      - "tmpfs_t"
+      - "-c"
+      - "file"
+      - "-p"
+      - "write"
+  register: pre_rule_write
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | pre-load sesearch on functional surface (map, unconditional only)"
+  ansible.builtin.shell: >
+    set -o pipefail;
+    sesearch -A -s staff_t -t tmpfs_t -c file -p map
+    | grep -v 'domain_can_mmap_files' || true
+  args:
+    executable: /bin/bash
+  register: pre_rule_map
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | compute workaround-obsolescence flag"
+  ansible.builtin.set_fact:
+    topic_staff_wayland_memfd_already_closed: >-
+      {{ ((pre_rule_write.stdout | default('')) | length > 0)
+         and ((pre_rule_map.stdout | default('')) | length > 0) }}
+
+- name: "preflight | report workaround-obsolescence disposition"
+  ansible.builtin.debug:
+    msg: |
+      staff-wayland-memfd: both permissions of the functional vector are
+      already present as unconditional grants in the loaded policy. A
+      future stock-policy update has shipped the equivalent grant; the
+      topic-owned module is not required and the apply stage will skip
+      the CIL push as a clean no-op.
+  when:
+    - topic_staff_wayland_memfd_already_closed | bool
+
+- name: "preflight | pre-hardening sanity baseline (non-fatal capture)"
+  ansible.builtin.shell: |
+    set +e
+    rpm -q gnome-shell mutter
+    loginctl show-session "${XDG_SESSION_ID:-self}" -p Type --value 2>&1 || true
+    id -Z
+    semodule -lfull | grep -wE '^[ ]*400.*staff_wayland_memfd' || echo '(module not installed)'
+    sesearch -A -s staff_t -t tmpfs_t -c file -p write 2>&1 || true
+    sesearch -A -s staff_t -t tmpfs_t -c file -p map 2>&1 || true
+    ausearch -m AVC,USER_AVC -ts boot 2>/dev/null \
+      | grep -E 'staff_t.*tmpfs_t.*file' \
+      | head -20 \
+      || true
+    exit 0
+  args:
+    executable: /bin/bash
+  register: preflight_sanity_recon
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report pre-hardening sanity baseline"
+  ansible.builtin.debug:
+    msg: >
+      Pre-deploy staff-wayland-memfd state snapshot (non-fatal capture):
+      {{ preflight_sanity_recon.stdout | trim }}.

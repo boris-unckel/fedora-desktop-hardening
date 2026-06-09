@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+galaxy_info:
+  role_name: topic_python_pip_user_tree
+  description: "Python pip user-tree discipline (PEP-668 marker file at the active interpreter's stdlib path, plus operator-policy surfaces for the symmetric --user pip discipline and the curated whitelist)."
+  license: "MIT"
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Fedora
+      versions:
+        - "44"
+        - "45"
+
+dependencies:
+  - role: foundation_umask
+  - role: foundation_sudo_roles

@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_switcheroo_control. Block apply when the
+# host family is wrong, when the switcheroo-control package is not
+# installed, or when the host carries two or more PCI display-plus-3D
+# controllers (hybrid-GPU class — the topic does not apply on this
+# hardware class; the daemon is required for normal desktop operation).
+# The pre-hardening sanity baseline is a non-fatal report stored as a
+# fact for post-deploy comparison.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_switcheroo_control targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }}
+      {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_switcheroo_control_required_packages }}"
+
+- name: "preflight | enumerate VGA-compatible display controllers"
+  ansible.builtin.command:
+    argv:
+      - lspci
+      - "-d"
+      - "::0300"
+      - "-mm"
+  register: lspci_display
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | enumerate 3D controllers"
+  ansible.builtin.command:
+    argv:
+      - lspci
+      - "-d"
+      - "::0302"
+      - "-mm"
+  register: lspci_3d
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | compute combined GPU count"
+  ansible.builtin.set_fact:
+    topic_switcheroo_control_gpu_count: >-
+      {{ ((lspci_display.stdout_lines | default([])) | length)
+         + ((lspci_3d.stdout_lines | default([])) | length) }}
+
+- name: "preflight | report GPU enumeration"
+  ansible.builtin.debug:
+    msg: >
+      PCI display+3D controller enumeration:
+      gpu_count={{ topic_switcheroo_control_gpu_count }}.
+      Display controllers (class 0300):
+      {{ lspci_display.stdout | trim }}
+      3D controllers (class 0302):
+      {{ lspci_3d.stdout | trim }}
+
+- name: "preflight | fail-fast on hybrid-GPU host"
+  ansible.builtin.fail:
+    msg: |
+      switcheroo-control: hybrid-GPU detected
+      ({{ topic_switcheroo_control_gpu_count }} display+3D controllers).
+      This topic does not apply on this hardware class — the daemon is
+      required for normal desktop operation. Open a fresh manifest review
+      before applying this role on a hybrid-GPU host.
+  when:
+    - (topic_switcheroo_control_gpu_count | int)
+        > (topic_switcheroo_control_max_gpu_count_for_applicability | int)
+
+- name: "preflight | pre-hardening sanity baseline (non-fatal capture)"
+  ansible.builtin.shell: |
+    set +e
+    systemctl is-enabled "{{ topic_switcheroo_control_unit_name }}" 2>&1
+    systemctl is-active "{{ topic_switcheroo_control_unit_name }}" 2>&1
+    systemctl show -p ActiveState --value "{{ topic_switcheroo_control_unit_name }}"
+    systemctl show -p SubState --value "{{ topic_switcheroo_control_unit_name }}"
+    systemctl show -p Result --value "{{ topic_switcheroo_control_unit_name }}"
+    systemctl show -p MainPID --value "{{ topic_switcheroo_control_unit_name }}"
+    systemctl show -p UnitFileState --value "{{ topic_switcheroo_control_unit_name }}"
+    stat "{{ topic_switcheroo_control_graphical_target_wants_symlink }}" 2>&1 || true
+    journalctl -u "{{ topic_switcheroo_control_unit_name }}" --since '-1 hour' --no-pager 2>&1 | tail -10
+    exit 0
+  args:
+    executable: /bin/bash
+  register: preflight_sanity_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report pre-hardening sanity baseline"
+  ansible.builtin.debug:
+    msg: >
+      Pre-deploy switcheroo-control state snapshot (non-fatal capture):
+      {{ preflight_sanity_recon.stdout | trim }}.

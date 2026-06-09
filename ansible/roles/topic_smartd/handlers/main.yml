@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_smartd.
+#
+# Two notification channels:
+#   "topic_smartd cil changed"  — fires on a change to the CIL source file.
+#                                  Triggers semodule install under sysadm_r.
+#   "topic_smartd dropin changed" — fires on a change to any of the three
+#                                  drop-in files. Triggers daemon-reload
+#                                  followed by a unit restart.
+#
+# A separate "restorecon smartd" handler is notified by the
+# community.general.sefcontext task in tasks/main.yml and runs after the
+# fcontext mapping is added.
+
+- name: "topic_smartd | semodule install nnp_smartd"
+  ansible.builtin.command:
+    argv:
+      - semodule
+      - "-X"
+      - "{{ topic_smartd_cil_priority | string }}"
+      - "-i"
+      - "{{ topic_smartd_cil_dir }}/{{ topic_smartd_cil_module_name }}.cil"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_smartd cil changed"
+
+- name: "topic_smartd | restorecon smartd"
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-v"
+      - "/usr/bin/smartd"
+      - "/usr/sbin/smartd"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "restorecon smartd"
+
+- name: "topic_smartd | daemon-reload"
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "topic_smartd dropin changed"
+
+- name: "topic_smartd | restart smartd"
+  ansible.builtin.systemd:
+    name: "smartd.service"
+    state: restarted
+  listen: "topic_smartd dropin changed"

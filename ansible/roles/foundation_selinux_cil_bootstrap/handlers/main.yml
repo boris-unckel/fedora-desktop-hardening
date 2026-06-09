@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# foundation_selinux_cil_bootstrap has no runtime handlers.
+#
+# This Foundation layer documents the loader contract. It does not install
+# any specific CIL module and does not call semodule. There is no daemon
+# behind the loader: semodule -X 400 -i activates a module at semodule
+# exit, and the modify steps that issue semodule live in the roles that
+# ship CIL modules, not here.
+#
+# The role pauses for nothing.

@@ -1,0 +1,25 @@
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+;; keepassxc_spawn_isolation.cil — domain-inheritance breaker for helper spawns.
+;;
+;; When keepassxc_t executes a bin_t helper (for example, opening a stored
+;; entry URL launches the browser via /usr/bin/flatpak, which execs bwrap and
+;; the browser binary), the spawned process tree would inherit keepassxc_t.
+;; Combined with the keepassxc_dbtype_autotrans rule that would be a hazard:
+;; the inherited keepassxc_t helper creates files in user_home_t directories
+;; (the browser profile tree), and the autotrans rule relabels every one of
+;; them keepassxc_db_t — a cross-tree mislabel cascade.
+;;
+;; This module keeps the keepassxc_t sub-domain scoped to KeePassXC itself.
+;; The type_transition kicks any bin_t exec from keepassxc_t back to staff_t,
+;; so the helper chain runs entirely under staff_t and the autotrans rule does
+;; not fire for files those helpers create. The two allows grant the execute
+;; and the process-transition surface the kick-back requires.
+;;
+;; Target type is scoped to bin_t only: on a merged /usr/sbin host the helper
+;; binaries (flatpak, bwrap, xdg-open) all carry bin_t; there is no separate
+;; helper exec type to cover. Kept in its own module so it can be loaded or
+;; rolled back independently of keepassxc_extras.
+
+(typetransition keepassxc_t bin_t process staff_t)
+(allow keepassxc_t bin_t (file (execute)))
+(allow keepassxc_t staff_t (process (transition rlimitinh siginh noatsecure)))

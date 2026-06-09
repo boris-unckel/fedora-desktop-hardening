@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: foundation_umask
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying must not change state on a correctly configured host)
+# Layer 0 of the Foundation tier; no Foundation dependencies.
+
+- name: "foundation_umask | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - foundation_umask
+    - preflight
+
+- name: "foundation_umask | probe (read-only)"
+  ansible.builtin.script: files/probe.sh
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - foundation_umask
+    - probe
+
+- name: "foundation_umask | apply configuration"
+  block:
+
+    - name: "foundation_umask | set UMASK in {{ foundation_umask_login_defs_path }}"
+      ansible.builtin.lineinfile:
+        path: "{{ foundation_umask_login_defs_path }}"
+        regexp: '^UMASK\s+'
+        line: "UMASK\t\t{{ foundation_umask_value }}"
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+        validate: "grep -qE '^UMASK[[:space:]]+{{ foundation_umask_value }}$' %s"
+
+  rescue:
+
+    - name: "foundation_umask | rollback marker"
+      ansible.builtin.fail:
+        msg: |
+          Apply failed for foundation_umask. The lineinfile backup written
+          alongside {{ foundation_umask_login_defs_path }} is the rollback
+          source. The change does not affect existing sessions; new logins
+          read pam_umask only after a successful apply.
+
+  tags:
+    - foundation_umask
+    - apply
+
+- name: "foundation_umask | verify (Soll/Ist)"
+  ansible.builtin.script: files/verify.sh
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - foundation_umask
+    - verify

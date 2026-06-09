@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+galaxy_info:
+  role_name: topic_staff_wayland_memfd
+  description: "Wayland compositor read-write mmap of client wl_shm memfd buffers (tmpfs_t) under a staff_t-confined compositor on the staff_u user-mapping (single-rule, two-permission topic-owned CIL module loaded at priority 400, no drop-in, no fcontext, no boolean toggle, no service touch)."
+  license: "MIT"
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Fedora
+      versions:
+        - "44"
+        - "45"
+
+dependencies:
+  - role: foundation_umask
+  - role: foundation_sudo_roles
+  - role: foundation_selinux_cil_bootstrap
+  - role: foundation_audit_logging_baseline

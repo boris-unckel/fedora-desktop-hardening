@@ -1,0 +1,151 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_flatpak_oci_pull_dbus. Block apply when
+# the host family is wrong, when the required package is missing, or
+# when the operator's runtime SELinux mapping is not staff_u. Mark the
+# apply step as a clean no-op when the allow surface is already present
+# in the loaded policy (the workaround-obsolescence path: a future
+# stock-policy update has shipped an equivalent grant and the
+# topic-owned module is no longer required). Emit an informational note
+# when the operator's Flatpak remote inventory contains no OCI-typed
+# entry — the gap is currently unreachable, but pre-applying the policy
+# patch protects future remote additions.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_flatpak_oci_pull_dbus targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }}
+      {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | required packages present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_flatpak_oci_pull_dbus_required_packages }}"
+
+- name: "preflight | operator runtime SELinux mapping"
+  ansible.builtin.command:
+    argv:
+      - id
+      - "-Z"
+  register: id_z_result
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | applicability gate on operator mapping"
+  ansible.builtin.fail:
+    msg: |
+      flatpak-oci-pull-dbus: operator runtime SELinux mapping does not
+      match the applicability anchor
+      ('{{ topic_flatpak_oci_pull_dbus_expected_seuser_substring }}').
+      Detected: '{{ id_z_result.stdout | trim }}'.
+      The stock-policy gap is reachable only from the role-switched
+      staff_u → sysadm_r → sysadm_t admin path; an unconfined_u
+      operator does not exercise the gap and does not need this topic.
+  when:
+    - topic_flatpak_oci_pull_dbus_expected_seuser_substring
+        not in (id_z_result.stdout | default(''))
+
+- name: "preflight | enumerate flatpak remote inventory"
+  ansible.builtin.command:
+    argv:
+      - flatpak
+      - remotes
+      - "--columns=name,url,collection"
+  register: flatpak_remotes_result
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | count OCI-typed remotes"
+  ansible.builtin.set_fact:
+    topic_flatpak_oci_pull_dbus_oci_remote_count: >-
+      {{ (flatpak_remotes_result.stdout_lines | default([]))
+         | map('split')
+         | map('last')
+         | reject('equalto', 'Url')
+         | select('match', '^' ~ topic_flatpak_oci_pull_dbus_oci_remote_url_prefix)
+         | list
+         | length }}
+
+- name: "preflight | report no-OCI-remote informational note"
+  ansible.builtin.debug:
+    msg: |
+      flatpak-oci-pull-dbus: no OCI-typed remote configured. The
+      stock-policy gap is currently unreachable on this host. The
+      policy patch is applied pre-emptively so a future remote
+      addition (for example, the stock `fedora` remote at
+      `oci+https://registry.fedoraproject.org`) does not surface the
+      gap.
+  when:
+    - (topic_flatpak_oci_pull_dbus_oci_remote_count | int) == 0
+
+- name: "preflight | pre-load sesearch on functional surface"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "sysadm_t"
+      - "-t"
+      - "unconfined_dbusd_t"
+      - "-c"
+      - "unix_stream_socket"
+      - "-p"
+      - "connectto"
+  register: pre_rule
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | compute workaround-obsolescence flag"
+  ansible.builtin.set_fact:
+    topic_flatpak_oci_pull_dbus_already_closed: >-
+      {{ ((pre_rule.stdout | default('')) | length) > 0 }}
+
+- name: "preflight | report workaround-obsolescence disposition"
+  ansible.builtin.debug:
+    msg: |
+      flatpak-oci-pull-dbus: the allow surface is already present in
+      the loaded policy. A future stock-policy update has shipped the
+      equivalent grant; the topic-owned module is not required and the
+      apply stage will skip the CIL push as a clean no-op.
+  when:
+    - topic_flatpak_oci_pull_dbus_already_closed | bool
+
+- name: "preflight | pre-hardening sanity baseline (non-fatal capture)"
+  ansible.builtin.shell: |
+    set +e
+    rpm -q flatpak
+    flatpak remotes --columns=name,url,collection 2>&1 || true
+    id -Z
+    semodule -lfull | grep -wE '^[ ]*400.*flatpak_oci_pull_dbus' || echo '(module not installed)'
+    sesearch -A -s sysadm_t -t unconfined_dbusd_t -c unix_stream_socket -p connectto 2>&1 || true
+    ausearch -m AVC,USER_AVC -ts boot 2>/dev/null \
+      | grep -E '(sysadm_t.*unconfined_dbusd_t.*unix_stream_socket|/run/user/0/bus)' \
+      | head -20 \
+      || true
+    exit 0
+  args:
+    executable: /bin/bash
+  register: preflight_sanity_recon
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report pre-hardening sanity baseline"
+  ansible.builtin.debug:
+    msg: >
+      Pre-deploy flatpak-oci-pull-dbus state snapshot (non-fatal
+      capture): {{ preflight_sanity_recon.stdout | trim }}.

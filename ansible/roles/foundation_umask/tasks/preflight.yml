@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for foundation_umask. Block apply when the target file is
+# missing or does not contain a UMASK line that lineinfile can replace.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      foundation_umask targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | login.defs is present and root-owned"
+  ansible.builtin.stat:
+    path: "{{ foundation_umask_login_defs_path }}"
+  register: login_defs_stat
+  failed_when:
+    - not (login_defs_stat.stat.exists | default(false))
+    - login_defs_stat.stat.pw_name | default('') != 'root'
+
+- name: "preflight | UMASK line exists in login.defs"
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -qE
+      - '^UMASK[[:space:]]+[0-7]+'
+      - "{{ foundation_umask_login_defs_path }}"
+  register: umask_line_check
+  changed_when: false
+  failed_when: umask_line_check.rc != 0

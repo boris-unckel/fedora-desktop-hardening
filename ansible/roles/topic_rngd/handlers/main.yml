@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_rngd.
+#
+# Two notification channels:
+#   "topic_rngd cil changed"    — fires on a change to the CIL source
+#                                  file. Triggers semodule install
+#                                  under sysadm_r.
+#   "topic_rngd dropin changed" — fires on a change to any of the three
+#                                  drop-in files. Triggers restorecon,
+#                                  daemon-reload, and a unit restart.
+
+- name: "topic_rngd | semodule install nnp_rngd"
+  ansible.builtin.command:
+    argv:
+      - semodule
+      - "-X"
+      - "{{ topic_rngd_cil_priority | string }}"
+      - "-i"
+      - "{{ topic_rngd_cil_dir }}/{{ topic_rngd_cil_module_name }}.cil"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_rngd cil changed"
+
+- name: "topic_rngd | restorecon rngd drop-ins"
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-v"
+      - "{{ topic_rngd_dropin_dir }}/99-hardening.conf"
+      - "{{ topic_rngd_dropin_dir }}/99-nnp.conf"
+      - "{{ topic_rngd_dropin_dir }}/99-process-restrict.conf"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_rngd dropin changed"
+
+- name: "topic_rngd | daemon-reload"
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "topic_rngd dropin changed"
+
+- name: "topic_rngd | restart rngd"
+  ansible.builtin.systemd:
+    name: "rngd.service"
+    state: restarted
+  listen: "topic_rngd dropin changed"

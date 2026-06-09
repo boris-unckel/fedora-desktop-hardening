@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_switcheroo_control. Override in group_vars or playbook.
+
+# Unit name for the hybrid-GPU detection daemon.
+topic_switcheroo_control_unit_name: "switcheroo-control.service"
+
+# Required package; preflight asserts presence. The role does not invoke
+# `dnf remove switcheroo-control`; package retention keeps the rollback
+# path local and deterministic.
+topic_switcheroo_control_required_packages:
+  - switcheroo-control
+
+# WantedBy=graphical.target symlink path. The systemctl disable --now
+# transaction removes this symlink; the verify discipline asserts its
+# absence.
+topic_switcheroo_control_graphical_target_wants_symlink: "/etc/systemd/system/graphical.target.wants/switcheroo-control.service"
+
+# Expected end-state values surfaced from `systemctl show --value`.
+topic_switcheroo_control_expected_unit_file_state: "disabled"
+topic_switcheroo_control_expected_active_state: "inactive"
+topic_switcheroo_control_expected_sub_state: "dead"
+topic_switcheroo_control_expected_result: "success"
+topic_switcheroo_control_expected_main_pid: "0"
+
+# Applicability gate. Hosts with a combined display-plus-3D PCI controller
+# count >= 2 are hybrid-GPU and structurally inapplicable; the role's
+# preflight stage fail-fasts with an actionable error message.
+topic_switcheroo_control_max_gpu_count_for_applicability: 1

@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_tuned. Override in group_vars or playbook.
+
+# Drop-in directory for tuned.service.
+topic_tuned_dropin_dir: "/etc/systemd/system/tuned.service.d"
+
+# Required package: the daemon binary, the user-space tooling, the systemd
+# unit file, the dbus service activation file, the system-bus policy file,
+# the operator configuration file, and the package-default profile data.
+topic_tuned_required_packages:
+  - tuned
+
+# Daemon binary path. The package installs the binary at /usr/bin/tuned on
+# Fedora 44; the vendor unit's ExecStart= names /usr/sbin/tuned, which the
+# F44 sbin/bin path equivalency rewrites to /usr/bin/tuned before the
+# file_contexts table is consulted. The preflight runs matchpathcon on
+# both paths and fail-fasts if /usr/bin/tuned does not resolve to
+# tuned_exec_t (the canonical post-merge label).
+topic_tuned_binary_path_canonical: "/usr/bin/tuned"
+topic_tuned_binary_path_premerge: "/usr/sbin/tuned"
+topic_tuned_expected_fcontext_canonical: "tuned_exec_t"
+topic_tuned_expected_fcontext_premerge: "bin_t"
+
+# Drop-in path; preflight runs matchpathcon and asserts the result
+# resolves to systemd_unit_file_t (stock targeted policy ships no
+# service-specific subtype for the drop-in directory).
+topic_tuned_dropin_fcontext: "systemd_unit_file_t"
+
+# Expected SELinux runtime domain. tuned runs as tuned_t; the type-
+# transition init_t -> tuned_t fires on the tuned_exec_t-labelled binary.
+topic_tuned_expected_runtime_domain: "tuned_t"
+
+# Expected effective values surfaced from `systemctl show --value`.
+# The two opt-outs (ProtectKernelTunables=no, ProtectControlGroups=no)
+# are deliberate concessions to the daemon's profile execution path
+# (sysctl writes via /proc/sys/, cgroup writes via /sys/fs/cgroup/);
+# tightening either to `yes` would break every standard profile that
+# ships with the package and is drift against this end-state.
+topic_tuned_expected_protect_system: "full"
+topic_tuned_expected_protect_home: "yes"
+topic_tuned_expected_protect_kernel_tunables: "no"
+topic_tuned_expected_protect_kernel_modules: "yes"
+topic_tuned_expected_protect_kernel_logs: "yes"
+topic_tuned_expected_protect_control_groups: "no"
+topic_tuned_expected_private_tmp: "yes"
+topic_tuned_expected_protect_clock: "yes"
+topic_tuned_expected_protect_hostname: "yes"
+topic_tuned_expected_lock_personality: "yes"
+topic_tuned_expected_restrict_realtime: "yes"
+topic_tuned_expected_restrict_suid_sgid: "yes"
+topic_tuned_expected_syscall_architectures: "native"
+
+# tuned-adm active smoketest: assert exit 0 and stdout begins with
+# "Current active profile:" followed by a non-empty profile name. No
+# specific profile name is asserted (operator-policy outside this topic).
+topic_tuned_active_profile_marker: "Current active profile:"
+
+# AVC and SECCOMP filter expressions. Any non-zero hit since boot is
+# drift; the filters target the tuned-related SELinux types and the
+# tuned process name.
+topic_tuned_avc_filter: "(tuned_t|tuned_exec_t|tuned_log_t|tuned_etc_t|tuned_rw_etc_t)"
+topic_tuned_seccomp_filter: "tuned"
+
+# No EXPECTED_NNP key (deliberate absence — no NNP drop-in shipped).
+# No EXPECTED_MDWE / EXPECTED_SYSCALL_FILTER / EXPECTED_CAP_BOUNDING_SET /
+# EXPECTED_RESTRICT_ADDRESS_FAMILIES keys (deliberate absence — process-
+# internal kernel-restriction layer deferred). No EXPECTED_ACTIVE_PROFILE
+# key (operator-policy). No topic_tuned_cil_module_name /
+# topic_tuned_cil_priority keys (no CIL module shipped).

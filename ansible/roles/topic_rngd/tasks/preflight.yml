@@ -1,0 +1,148 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_rngd. Block apply when the host family is
+# wrong, when the rngd vendor unit is missing, when the rng-tools
+# package is not installed, or when matchpathcon for /usr/bin/rngd
+# returns a bin_t mapping (F44 sbin/bin-merge has displaced the stock
+# fcontext mapping; manifest revision required). Stock-policy
+# nnp_transition pre-test, /etc/sysconfig/rngd recon, and the entropy-
+# pool baseline capture are non-fatal reports stored as facts for
+# post-deploy comparison.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_rngd targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | rngd.service vendor unit present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/rngd.service"
+  register: vendor_unit
+  failed_when: not (vendor_unit.stat.exists | default(false))
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_rngd_required_packages }}"
+
+- name: "preflight | stock unit sparse-baseline recon"
+  ansible.builtin.shell: >
+    grep -E
+    '^(Type|ExecStart|EnvironmentFile|Condition|RuntimeDirectory|StateDirectory|ConfigurationDirectory|LogsDirectory|ProtectSystem|SystemCallFilter|MemoryDenyWriteExecute|RestrictNamespaces|RestrictAddressFamilies|DeviceAllow|User|Group)='
+    /usr/lib/systemd/system/rngd.service
+    || true
+  args:
+    executable: /bin/bash
+  register: stock_directive_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report stock unit directive recon"
+  ansible.builtin.debug:
+    msg: >
+      Stock rngd.service directives (non-fatal report; the topic
+      assumes a sparse vendor unit. A future package version that adds
+      a sandbox directive may require manifest revision before applying
+      this role):
+      {{ stock_directive_recon.stdout | trim }}.
+
+- name: "preflight | matchpathcon {{ topic_rngd_binary_path }}"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "{{ topic_rngd_binary_path }}"
+  register: matchpathcon_check
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast if matchpathcon returns bin_t"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon {{ topic_rngd_binary_path }} returned a bin_t mapping:
+      {{ matchpathcon_check.stdout | trim }}
+      F44 sbin/bin-merge has displaced the stock {{ topic_rngd_expected_fcontext }}
+      mapping. The manifest needs revision to add a
+      community.general.sefcontext mitigation task and an
+      f44-sbin-bin-merge cross-link in the topic Reference. Open a
+      fresh topic session against an extended manifest before applying
+      this role.
+  when:
+    - (matchpathcon_check.stdout | regex_search('bin_t')) is not none
+    - (matchpathcon_check.stdout | regex_search(topic_rngd_expected_fcontext)) is none
+
+- name: "preflight | report matchpathcon outcome"
+  ansible.builtin.debug:
+    msg: >
+      matchpathcon {{ topic_rngd_binary_path }}: {{ matchpathcon_check.stdout | trim }}.
+
+- name: "preflight | SELinux nnp_transition pre-test (expected empty)"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "init_t"
+      - "-t"
+      - "{{ topic_rngd_expected_selinux_domain }}"
+      - "-c"
+      - "process2"
+      - "-p"
+      - "nnp_transition"
+  register: nnp_check
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report SELinux nnp_transition pre-test outcome"
+  ansible.builtin.debug:
+    msg: >
+      SELinux nnp_transition pre-test for
+      init_t -> {{ topic_rngd_expected_selinux_domain }}:
+      {{ 'EMPTY (expected; topic CIL is required and will be installed)'
+         if (nnp_check.stdout | trim) == '' else
+         'NON-EMPTY (the rule is already in policy; topic CIL install at '
+         + 'priority 400 is idempotent and overlays without harm)' }}.
+
+- name: "preflight | /etc/sysconfig/rngd recon"
+  ansible.builtin.shell: >
+    grep -E '^RNGD_ARGS=' /etc/sysconfig/rngd || true
+  args:
+    executable: /bin/bash
+  register: preflight_sysconfig_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report /etc/sysconfig/rngd recon"
+  ansible.builtin.debug:
+    msg: >
+      /etc/sysconfig/rngd RNGD_ARGS={{ (preflight_sysconfig_recon.stdout | trim) | default('(absent)', true) }}.
+      A missing or modified -D daemon:daemon instruction signals a
+      privilege-drop pipeline different from the topic assumption; the
+      multi-stage privilege-drop carve-out in 99-process-restrict.conf
+      may need adjustment.
+
+- name: "preflight | entropy-pool baseline capture"
+  ansible.builtin.shell: >
+    cat /proc/sys/kernel/random/entropy_avail || true
+  args:
+    executable: /bin/bash
+  register: preflight_entropy_baseline
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report entropy-pool baseline"
+  ansible.builtin.debug:
+    msg: >
+      Pre-deploy entropy_avail snapshot: {{ (preflight_entropy_baseline.stdout | trim) | default('(unreadable)', true) }}.

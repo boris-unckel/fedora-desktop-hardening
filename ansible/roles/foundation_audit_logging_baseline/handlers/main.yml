@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# foundation_audit_logging_baseline has no runtime handlers.
+#
+# auditd.service carries RefuseManualStart=yes and RefuseManualStop=yes;
+# any future role that pushes /etc/audit/auditd.conf must accept that the
+# change activates only at the next reboot. Live rule changes go through
+# auditctl -R or augenrules --load, not through systemctl.
+#
+# systemd-journald.service is restartable, but this role pushes no
+# /etc/systemd/journald.conf.d content, so there is nothing to react to
+# with a daemon reload or restart.
+#
+# The role pauses for nothing.

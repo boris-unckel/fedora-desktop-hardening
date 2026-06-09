@@ -1,0 +1,185 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_smartd
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying does not change state on a correctly
+# configured host; see README.md "Idempotence notes").
+#
+# Modify ordering invariant:
+#   1. Push CIL source to /usr/local/share/selinux/.
+#   2. Install CIL module via semodule -X 400 -i (handler).
+#   3. flush_handlers — the CIL must be loaded before the NNP drop-in.
+#   4. Add F44 fcontext mapping (community.general.sefcontext).
+#   5. Push the three drop-in INI files.
+#   6. Daemon-reload + restart (handlers).
+# A change to any of the four shipping artefacts notifies the appropriate
+# handler chain. Live-state probe is read-only.
+
+- name: "topic_smartd | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_smartd
+    - preflight
+
+- name: "topic_smartd | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_smartd
+    - probe
+
+- name: "topic_smartd | apply configuration"
+  block:
+
+    - name: "topic_smartd | CIL publish directory present"
+      ansible.builtin.file:
+        path: "{{ topic_smartd_cil_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "topic_smartd | install CIL source"
+      ansible.builtin.copy:
+        src: "{{ topic_smartd_cil_module_name }}.cil"
+        dest: "{{ topic_smartd_cil_dir }}/{{ topic_smartd_cil_module_name }}.cil"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_smartd cil changed"
+
+    - name: "topic_smartd | flush handlers (CIL must be loaded before NNP drop-in)"
+      ansible.builtin.meta: flush_handlers
+
+    - name: "topic_smartd | F44 fcontext mapping for /usr/bin/smartd"
+      community.general.sefcontext:
+        target: "{{ topic_smartd_fcontext_path }}"
+        setype: "{{ topic_smartd_fcontext_setype }}"
+        state: present
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      notify:
+        - "restorecon smartd"
+
+    - name: "topic_smartd | drop-in directory present"
+      ansible.builtin.file:
+        path: "{{ topic_smartd_dropin_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "topic_smartd | install 99-hardening.conf"
+      ansible.builtin.copy:
+        src: "99-hardening.conf"
+        dest: "{{ topic_smartd_dropin_dir }}/99-hardening.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_smartd dropin changed"
+
+    - name: "topic_smartd | install 99-nnp.conf"
+      ansible.builtin.copy:
+        src: "99-nnp.conf"
+        dest: "{{ topic_smartd_dropin_dir }}/99-nnp.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_smartd dropin changed"
+
+    - name: "topic_smartd | install 99-process-restrict.conf"
+      ansible.builtin.copy:
+        src: "99-process-restrict.conf"
+        dest: "{{ topic_smartd_dropin_dir }}/99-process-restrict.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_smartd dropin changed"
+
+    - name: "topic_smartd | read live MainPID"
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - "show"
+          - "-p"
+          - "MainPID"
+          - "--value"
+          - "smartd.service"
+      register: live_main_pid
+      changed_when: false
+
+    - name: "topic_smartd | read live SELinux domain"
+      ansible.builtin.shell: >
+        awk -F: '{print $3}' /proc/{{ live_main_pid.stdout | trim }}/attr/current
+      args:
+        executable: /bin/bash
+      register: live_domain
+      changed_when: false
+      failed_when: false
+      when: (live_main_pid.stdout | trim) not in ['', '0']
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_smartd | read AVC count since boot"
+      ansible.builtin.shell: >
+        ausearch -m AVC -ts boot
+        | grep -cE '(fsdaemon_t|nnp_transition|smartd)'
+        || true
+      args:
+        executable: /bin/bash
+      register: avc_count
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_smartd | report live state"
+      ansible.builtin.debug:
+        msg: >
+          smartd MainPID={{ live_main_pid.stdout | trim }},
+          SELinux domain={{ (live_domain.stdout | default('?')) | trim }},
+          AVC count since boot={{ (avc_count.stdout | default('0')) | trim }}.
+
+  rescue:
+
+    - name: "topic_smartd | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_smartd apply step failed. Auto-rollback is intentionally
+          not performed; rolling back the four artefacts requires an
+          operator decision about which stage to revert (NNP plus CIL
+          unload only, NNP plus process-restrict, or all four artefacts
+          plus the F44 fcontext mapping). See the topic Reference under
+          "Verification" for the three-stage rollback sequence and the
+          recover-from-boot-failure how-to for the boot-failure variant.
+
+  tags:
+    - topic_smartd
+    - apply
+
+- name: "topic_smartd | flush handlers before verify"
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - topic_smartd
+    - apply
+
+- name: "topic_smartd | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_smartd
+    - verify

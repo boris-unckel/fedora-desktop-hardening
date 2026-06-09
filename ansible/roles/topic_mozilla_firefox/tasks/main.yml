@@ -1,0 +1,208 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_mozilla_firefox
+# Pattern: Preflight -> optional profile-snapshot -> RPM-removal -> system-install
+# -> sandbox-override -> portal-cache reset -> optional profile-seeding
+# -> per-profile preference seed -> MIME-defaults verify
+# Idempotent: yes (re-applying must not change state on a correctly applied
+# host; every modify task wraps a Flatpak/DNF/blockinfile no-op call in
+# `creates:` or `changed_when:` discipline)
+#
+# No drop-in push, no CIL-module install, no daemon-reload, no restorecon,
+# no semanage fcontext, no system-bus systemctl restart, no kernel-module
+# load, no setsebool, and no `flatpak permission-set` for the application's
+# portal surfaces (camera/microphone/location remain default `ask`). The
+# only service restart is the per-user xdg-document-portal.service reset
+# reflex (encoded as a regular task, NOT as a handler).
+
+- name: "topic_mozilla_firefox | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_mozilla_firefox
+    - preflight
+
+- name: "topic_mozilla_firefox | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_mozilla_firefox
+    - probe
+
+- name: "topic_mozilla_firefox | apply configuration"
+  block:
+
+    - name: "topic_mozilla_firefox | initialize change-aggregate fact"
+      ansible.builtin.set_fact:
+        __topic_mozilla_firefox_override_changed: false
+
+    - name: "topic_mozilla_firefox | optional host-side profile snapshot"
+      ansible.builtin.shell: >
+        tar --zstd --acls --xattrs -cpf
+            "{{ topic_mozilla_firefox_external_snapshot_path }}"
+            -C "/home/{{ ansible_user_id }}/.mozilla/firefox/" .
+      args:
+        creates: "{{ topic_mozilla_firefox_external_snapshot_path }}"
+      when:
+        - (topic_mozilla_firefox_external_snapshot_path | default('')) != ''
+
+    - name: "topic_mozilla_firefox | RPM-removal of Firefox tree"
+      ansible.builtin.dnf:
+        name: "{{ topic_mozilla_firefox_rpm_removal_set }}"
+        state: absent
+      become: true
+
+    - name: "topic_mozilla_firefox | dnf autoremove of trailing orphans"
+      ansible.builtin.dnf:
+        autoremove: true
+      become: true
+
+    - name: "topic_mozilla_firefox | system-install of application ref"
+      ansible.builtin.command:
+        argv:
+          - flatpak
+          - install
+          - "-y"
+          - "--system"
+          - "{{ topic_mozilla_firefox_flathub_remote_name }}"
+          - "{{ topic_mozilla_firefox_application_id }}"
+      args:
+        creates: >-
+          /var/lib/flatpak/app/{{ topic_mozilla_firefox_application_id }}
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_mozilla_firefox | sandbox-override write"
+      ansible.builtin.shell: >
+        before=$(cat
+                 "/var/lib/flatpak/overrides/{{ topic_mozilla_firefox_application_id }}"
+                 2>/dev/null || true) ;
+        flatpak override --system "{{ topic_mozilla_firefox_application_id }}"
+          {% for fs in topic_mozilla_firefox_sandbox_override.filesystems_deny %}
+          --nofilesystem={{ fs | quote }}
+          {% endfor %}
+          {% for fs in topic_mozilla_firefox_sandbox_override.filesystems_allow %}
+          --filesystem={{ fs | quote }}
+          {% endfor %}
+          {% for s in topic_mozilla_firefox_sandbox_override.sockets_deny %}
+          --nosocket={{ s | quote }}
+          {% endfor %}
+          {% for s in topic_mozilla_firefox_sandbox_override.sockets_allow %}
+          --socket={{ s | quote }}
+          {% endfor %}
+        ;
+        rc=$? ;
+        after=$(cat
+                "/var/lib/flatpak/overrides/{{ topic_mozilla_firefox_application_id }}"
+                2>/dev/null || true) ;
+        if [ "$before" = "$after" ]; then
+          echo "UNCHANGED" ;
+        else
+          echo "CHANGED" ;
+        fi ;
+        exit "$rc"
+      register: override_result
+      changed_when: "'CHANGED' in override_result.stdout"
+      failed_when: override_result.rc != 0
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_mozilla_firefox | aggregate override-change signal"
+      ansible.builtin.set_fact:
+        __topic_mozilla_firefox_override_changed: true
+      when:
+        - override_result is defined
+        - "'CHANGED' in (override_result.stdout | default(''))"
+
+    - name: "topic_mozilla_firefox | conditional portal-cache reset"
+      ansible.builtin.systemd_service:
+        name: xdg-document-portal.service
+        scope: user
+        state: restarted
+      become: false
+      when:
+        - __topic_mozilla_firefox_override_changed | bool
+
+    - name: "topic_mozilla_firefox | optional profile-seeding"
+      ansible.builtin.shell: >
+        tar --zstd --acls --xattrs -xpf
+            "{{ topic_mozilla_firefox_external_snapshot_path }}"
+            -C "/home/{{ ansible_user_id }}/.var/app/{{ topic_mozilla_firefox_application_id }}/.mozilla/firefox/"
+      register: profile_seeding
+      changed_when: profile_seeding.rc == 0
+      failed_when: profile_seeding.rc != 0
+      when:
+        - (topic_mozilla_firefox_external_snapshot_path | default('')) != ''
+        - (topic_mozilla_firefox_profiles | length) > 0
+
+    - name: "topic_mozilla_firefox | per-profile VAAPI user.js block"
+      ansible.builtin.blockinfile:
+        path: >-
+          /home/{{ ansible_user_id }}/.var/app/{{ topic_mozilla_firefox_application_id }}/.mozilla/firefox/{{ item }}/user.js
+        block: "{{ topic_mozilla_firefox_vaapi_user_js_block }}"
+        marker: "// {mark} ANSIBLE MANAGED BLOCK — topic_mozilla_firefox VAAPI"
+        create: true
+        owner: "{{ ansible_user_id }}"
+        group: "{{ ansible_user_id }}"
+        mode: "0640"
+      become: false
+      loop: "{{ topic_mozilla_firefox_profiles }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: "topic_mozilla_firefox | MIME default-browser informational read"
+      ansible.builtin.command:
+        argv:
+          - xdg-settings
+          - get
+          - default-web-browser
+      register: default_browser_check
+      changed_when: false
+      failed_when: false
+      become: false
+
+    - name: "topic_mozilla_firefox | MIME-default mapping note"
+      ansible.builtin.debug:
+        msg: |
+          topic_mozilla_firefox: xdg-settings reports default-web-browser
+          as '{{ default_browser_check.stdout | trim }}'. On a host whose
+          pre-deploy MIME mapping resolved to a different desktop entry,
+          run
+            xdg-mime default {{ topic_mozilla_firefox_application_id }}.desktop \
+                              text/html application/xhtml+xml \
+                              x-scheme-handler/http x-scheme-handler/https
+          as the closing operator-side intervention. The role does not
+          write any xdg-mime default invocation.
+      when:
+        - (default_browser_check.stdout | default('') | trim)
+            != topic_mozilla_firefox_application_id ~ '.desktop'
+
+  rescue:
+
+    - name: "topic_mozilla_firefox | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_mozilla_firefox modify step failed. Auto-rollback is not
+          defined for this Topic. The byte-exact rollback verb (the
+          three-call sequence `flatpak override --system --reset`,
+          `flatpak uninstall -y --system`, `dnf install -y` of the
+          four-package set, plus operator-side restoration of the host-side
+          profile tree from the operator's external snapshot if applicable)
+          is documented in the Topic Reference under Recovery posture and is
+          the operator's deliberate decision. Boot-failure risk for this
+          Topic is structurally zero (the application is post-login and
+          has no init_t dependency).
+
+  tags:
+    - topic_mozilla_firefox
+    - apply
+
+- name: "topic_mozilla_firefox | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_mozilla_firefox
+    - verify

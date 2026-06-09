@@ -1,0 +1,5 @@
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+(allow init_t cupsd_t (process2 (nnp_transition)))
+(allow cupsd_t cupsd_lpd_t (process2 (nnp_transition)))
+(allow cupsd_t cupsd_config_t (process2 (nnp_transition)))
+(allow cupsd_t cups_pdf_t (process2 (nnp_transition)))

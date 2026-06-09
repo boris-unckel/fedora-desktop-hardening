@@ -1,0 +1,196 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_gnupg_pinentry_dbus
+# Pattern: Preflight -> Modify (single CIL push) -> Verify
+# Idempotent: yes (re-applying does not change state on a host already
+# in the end-state; ansible.builtin.copy converges on byte-for-byte
+# content match and the semodule install task is creates-guarded). See
+# README.md "Idempotence notes".
+#
+# Modify ordering invariant:
+#   1. Preflight (OS family, package presence, operator-mapping
+#      applicability gate, pinentry-program applicability gate,
+#      pre-load sesearch quad-probe, pre-hardening sanity baseline).
+#   2. Copy CIL source to /root/gnupg_pinentry_dbus.cil with explicit
+#      0644 root:root (operator UMASK 0027 reflex).
+#   3. semodule -X 400 -i, creates-guarded against the priority-400
+#      module slot under /var/lib/selinux/targeted/active/modules/.
+#   4. Post-load sesearch quad-probe asserts both allow surfaces are
+#      now present in the loaded policy.
+#
+# No drop-in push step. No semanage fcontext. No restorecon. No
+# systemctl daemon-reload. No service restart. The role's ordering is
+# the simplest CIL-shipping shape in this tree.
+
+- name: "topic_gnupg_pinentry_dbus | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_gnupg_pinentry_dbus
+    - preflight
+
+- name: "topic_gnupg_pinentry_dbus | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_gnupg_pinentry_dbus
+    - probe
+
+- name: "topic_gnupg_pinentry_dbus | apply configuration"
+  block:
+
+    - name: "topic_gnupg_pinentry_dbus | install CIL source"
+      ansible.builtin.copy:
+        src: "{{ topic_gnupg_pinentry_dbus_cil_module_name }}.cil"
+        dest: "{{ topic_gnupg_pinentry_dbus_cil_source_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      when:
+        - not (topic_gnupg_pinentry_dbus_already_closed | default(false) | bool)
+
+    - name: "topic_gnupg_pinentry_dbus | install CIL module at priority {{ topic_gnupg_pinentry_dbus_cil_priority }}"
+      ansible.builtin.command:
+        argv:
+          - semodule
+          - "-X"
+          - "{{ topic_gnupg_pinentry_dbus_cil_priority }}"
+          - "-i"
+          - "{{ topic_gnupg_pinentry_dbus_cil_source_path }}"
+        creates: "/var/lib/selinux/targeted/active/modules/{{ topic_gnupg_pinentry_dbus_cil_priority }}/{{ topic_gnupg_pinentry_dbus_cil_module_name }}/cil"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      when:
+        - not (topic_gnupg_pinentry_dbus_already_closed | default(false) | bool)
+
+    - name: "topic_gnupg_pinentry_dbus | post-load sesearch on functional surface"
+      ansible.builtin.command:
+        argv:
+          - sesearch
+          - "-A"
+          - "-s"
+          - "gpg_pinentry_t"
+          - "-t"
+          - "session_dbusd_tmp_t"
+          - "-c"
+          - "sock_file"
+          - "-p"
+          - "write"
+      register: post_rule_a
+      changed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_gnupg_pinentry_dbus | post-load sesearch on audit-cosmetic surface (noatsecure)"
+      ansible.builtin.command:
+        argv:
+          - sesearch
+          - "-A"
+          - "-s"
+          - "gpg_t"
+          - "-t"
+          - "gpg_agent_t"
+          - "-c"
+          - "process"
+          - "-p"
+          - "noatsecure"
+      register: post_rule_b_noatsecure
+      changed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_gnupg_pinentry_dbus | post-load sesearch on audit-cosmetic surface (rlimitinh)"
+      ansible.builtin.command:
+        argv:
+          - sesearch
+          - "-A"
+          - "-s"
+          - "gpg_t"
+          - "-t"
+          - "gpg_agent_t"
+          - "-c"
+          - "process"
+          - "-p"
+          - "rlimitinh"
+      register: post_rule_b_rlimitinh
+      changed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_gnupg_pinentry_dbus | post-load sesearch on audit-cosmetic surface (siginh)"
+      ansible.builtin.command:
+        argv:
+          - sesearch
+          - "-A"
+          - "-s"
+          - "gpg_t"
+          - "-t"
+          - "gpg_agent_t"
+          - "-c"
+          - "process"
+          - "-p"
+          - "siginh"
+      register: post_rule_b_siginh
+      changed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_gnupg_pinentry_dbus | assert post-load allow surfaces are present"
+      ansible.builtin.assert:
+        that:
+          - (post_rule_a.stdout | length) > 0
+          - (post_rule_b_noatsecure.stdout | length) > 0
+          - (post_rule_b_rlimitinh.stdout | length) > 0
+          - (post_rule_b_siginh.stdout | length) > 0
+        fail_msg: |
+          gnupg-pinentry-dbus: post-load sesearch quad-probe did not
+          confirm both allow surfaces in the loaded policy. The
+          semodule install step did not converge; investigate the
+          policy store and the module slot under
+          /var/lib/selinux/targeted/active/modules/{{ topic_gnupg_pinentry_dbus_cil_priority }}/{{ topic_gnupg_pinentry_dbus_cil_module_name }}/.
+
+    - name: "topic_gnupg_pinentry_dbus | report end-state"
+      ansible.builtin.debug:
+        msg: |
+          gnupg-pinentry-dbus end-state snapshot:
+          functional_rule_present={{ (post_rule_a.stdout | length) > 0 }},
+          audit_cosmetic_noatsecure_present={{ (post_rule_b_noatsecure.stdout | length) > 0 }},
+          audit_cosmetic_rlimitinh_present={{ (post_rule_b_rlimitinh.stdout | length) > 0 }},
+          audit_cosmetic_siginh_present={{ (post_rule_b_siginh.stdout | length) > 0 }},
+          obsolescence_no_op={{ topic_gnupg_pinentry_dbus_already_closed | default(false) }}.
+
+  rescue:
+
+    - name: "topic_gnupg_pinentry_dbus | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_gnupg_pinentry_dbus apply step failed. Auto-rollback
+          is intentionally not performed; the single-stage rollback
+          (`semodule -X {{ topic_gnupg_pinentry_dbus_cil_priority }} -r {{ topic_gnupg_pinentry_dbus_cil_module_name }}` under sysadm_r)
+          is operator-driven and is documented in the topic Reference.
+          Boot-failure risk for this topic is structurally zero — the
+          two allow rules grant access on user-process-side D-Bus
+          sock-file writes and on a user-process-side domain-transition
+          triple; neither surface is reachable from init_t.
+
+  tags:
+    - topic_gnupg_pinentry_dbus
+    - apply
+
+- name: "topic_gnupg_pinentry_dbus | flush handlers before verify"
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - topic_gnupg_pinentry_dbus
+    - apply
+
+- name: "topic_gnupg_pinentry_dbus | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_gnupg_pinentry_dbus
+    - verify

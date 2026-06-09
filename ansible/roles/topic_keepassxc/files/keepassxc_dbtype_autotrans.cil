@@ -1,0 +1,19 @@
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+;; keepassxc_dbtype_autotrans.cil — preserve keepassxc_db_t across atomic saves.
+;;
+;; KeePassXC writes a database update as a temporary file in the database
+;; directory and then rename(2)s it onto the target path. The temporary file
+;; inherits user_home_t from its parent directory, and rename(2) does not
+;; trigger an fcontext relabel, so without this rule a saved database silently
+;; reverts from keepassxc_db_t to user_home_t and the enforced cut is lost.
+;;
+;; This type_transition makes every file created by keepassxc_t in a
+;; user_home_t directory receive keepassxc_db_t. It is the dynamic complement
+;; to the static fcontext + restorecon labeling, which only covers files at
+;; rest. The rule is scoped to keepassxc_t as source; staff_t-confined
+;; applications (browser, mail, office) continue to create user_home_t.
+;;
+;; Kept in its own module so it can be loaded or rolled back independently of
+;; keepassxc_extras. keepassxc_t and keepassxc_db_t are resolved at link time.
+
+(typetransition keepassxc_t user_home_t file keepassxc_db_t)

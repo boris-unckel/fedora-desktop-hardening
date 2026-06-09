@@ -1,0 +1,198 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_mozilla_firefox. The role applies on Fedora 44+
+# desktops where the operator login is mapped to staff_u, the system-wide
+# Flatpak install is present with the flathub remote configured, the
+# flatpak-collection-id binding has been applied to the flathub remote, the
+# flatpak-audio-sandbox SELinux allow rule has been deployed, and no live
+# Firefox process (host-side or sandbox-side) is running.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_mozilla_firefox targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }}
+      {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | required packages present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_mozilla_firefox_required_packages }}"
+
+- name: "preflight | operator runtime SELinux mapping"
+  ansible.builtin.command:
+    argv:
+      - id
+      - "-Z"
+  register: id_z_result
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | operator-mapping applicability note"
+  ansible.builtin.debug:
+    msg: |
+      topic_mozilla_firefox: operator runtime SELinux mapping does not
+      contain the canonical anchor
+      ('{{ topic_mozilla_firefox_expected_seuser_substring }}').
+      Detected: '{{ id_z_result.stdout | trim }}'.
+      The end-state behaves identically on this host, but this Topic's framing
+      assumes a staff_u-mapped login; an unconfined_u operator's surrounding
+      hardening posture is owned by separate articles. The role completes; it
+      does not abort on this branch.
+  when:
+    - topic_mozilla_firefox_expected_seuser_substring
+        not in (id_z_result.stdout | default(''))
+
+- name: "preflight | flathub remote presence"
+  ansible.builtin.command:
+    argv:
+      - flatpak
+      - remotes
+      - "--columns=name"
+  register: flatpak_remote_listing
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | abort if flathub remote is missing"
+  ansible.builtin.fail:
+    msg: |
+      topic_mozilla_firefox: the flathub remote is not configured on this
+      host. Configure it (under role-switched sysadm_t) before applying this
+      Topic; the configuration of the system-wide flathub remote is owned by
+      operator setup outside this role.
+  when:
+    - topic_mozilla_firefox_flathub_remote_name
+        not in (flatpak_remote_listing.stdout | default(''))
+
+- name: "preflight | flathub collection-id binding present"
+  ansible.builtin.shell: >
+    awk -v r="{{ topic_mozilla_firefox_flathub_remote_name }}"
+        '/^\[remote "/ {
+           in_section = 0
+           if ($0 == "[remote \"" r "\"]") { in_section = 1 }
+           next
+         }
+         /^\[/ { in_section = 0; next }
+         in_section && /^collection-id=/ { print; exit }'
+        "{{ topic_mozilla_firefox_repo_config_path }}"
+  register: flathub_collection_id
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | flathub collection-id binding applicability note"
+  ansible.builtin.debug:
+    msg: |
+      topic_mozilla_firefox: the flathub remote in
+      {{ topic_mozilla_firefox_repo_config_path }} carries no
+      collection-id= binding. Apply the flatpak-collection-id sibling
+      Topic before relying on `flatpak update` for this Topic's
+      application ref. The application install proceeds; the silent-skip
+      behaviour at update time is the operator-investigation signal.
+  when:
+    - (flathub_collection_id.stdout | default('') | trim) == ''
+
+- name: "preflight | audio-sandbox SELinux allow rule present"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "staff_t"
+      - "-t"
+      - "device_t"
+      - "-c"
+      - "dir"
+      - "-p"
+      - "mounton"
+  register: audio_sandbox_check
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | abort if audio-sandbox allow rule is missing"
+  ansible.builtin.fail:
+    msg: |
+      topic_mozilla_firefox: the (allow staff_t device_t (dir (mounton)))
+      SELinux rule is missing from the loaded policy. Apply the
+      flatpak-audio-sandbox sibling Topic before this Topic; without the
+      rule the application's bwrap-launched start fails at the audio
+      bind-mount stage with `Can't bind mount /oldroot/dev/snd on
+      /newroot/dev/snd: Unable to mount source on destination: Permission
+      denied`.
+  when:
+    - (audio_sandbox_check.stdout | default('') | trim) == ''
+
+- name: "preflight | SONAME-aware reverse-dependency probe (host-side .so files)"
+  ansible.builtin.shell: >
+    set -e ;
+    pkg="{{ item }}" ;
+    if ! rpm -q "$pkg" >/dev/null 2>&1 ; then
+      echo "absent" ;
+      exit 0 ;
+    fi ;
+    sonames=$(rpm -ql "$pkg" 2>/dev/null | grep '\.so' || true) ;
+    if [ -z "$sonames" ] ; then
+      echo "no_so_files" ;
+      exit 0 ;
+    fi ;
+    deps="" ;
+    for f in $sonames ; do
+      base=$(basename "$f") ;
+      consumer=$(rpm -q --whatrequires "$base()(64bit)" 2>/dev/null
+                 | grep -v '^no package requires' || true) ;
+      if [ -n "$consumer" ] ; then
+        deps="$deps $base:$consumer" ;
+      fi ;
+    done ;
+    if [ -n "$deps" ] ; then
+      echo "REVERSE_DEPS:$deps" ;
+      exit 1 ;
+    fi ;
+    echo "clean"
+  register: soname_probe
+  changed_when: false
+  failed_when: soname_probe.rc != 0
+  loop: "{{ topic_mozilla_firefox_rpm_removal_set }}"
+
+- name: "preflight | live Firefox process probe (host-side)"
+  ansible.builtin.shell: >
+    pgrep -u "{{ ansible_user_id }}"
+          -f '/usr/(lib64|bin)/firefox/' || true
+  register: pgrep_host_firefox
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | live Firefox process probe (sandbox-side)"
+  ansible.builtin.shell: >
+    pgrep -u "{{ ansible_user_id }}"
+          -f 'org\.mozilla\.firefox' || true
+  register: pgrep_sandbox_firefox
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | abort if a live Firefox process is detected"
+  ansible.builtin.fail:
+    msg: |
+      topic_mozilla_firefox: a live Firefox process was detected on the
+      host. Close every running Firefox application instance (host-side
+      and sandbox-side) before applying this Topic; the profile-seeding
+      stage relies on no Firefox process holding the profile lock at
+      apply time.
+      host-side pgrep output: {{ pgrep_host_firefox.stdout | trim }}
+      sandbox-side pgrep output: {{ pgrep_sandbox_firefox.stdout | trim }}
+  when:
+    - (pgrep_host_firefox.stdout | default('') | trim) != ''
+      or (pgrep_sandbox_firefox.stdout | default('') | trim) != ''

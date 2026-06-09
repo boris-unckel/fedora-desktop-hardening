@@ -1,0 +1,183 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: foundation_sudo_roles
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying does not change state on a correctly
+# configured host; see README.md "Idempotence notes").
+#
+# Layer 1 of the Foundation tier; depends on foundation_umask (Layer 0).
+# The semanage and semodule modify steps require the calling sudo session
+# to run in sysadm_t. Set become_flags accordingly per task.
+
+- name: "foundation_sudo_roles | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - foundation_sudo_roles
+    - preflight
+
+- name: "foundation_sudo_roles | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - foundation_sudo_roles
+    - probe
+
+- name: "foundation_sudo_roles | apply configuration"
+  block:
+
+    - name: "foundation_sudo_roles | read current login mapping for {{ foundation_sudo_roles_user }}"
+      ansible.builtin.command:
+        argv:
+          - awk
+          - "-F:"
+          - "-v"
+          - "u={{ foundation_sudo_roles_user }}"
+          - "$1 == u { print $2; exit }"
+          - "/etc/selinux/targeted/seusers"
+      register: current_seuser
+      changed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "foundation_sudo_roles | map {{ foundation_sudo_roles_user }} to staff_u"
+      ansible.builtin.command:
+        argv:
+          - semanage
+          - login
+          - "-m"
+          - "-s"
+          - "staff_u"
+          - "-r"
+          - "{{ foundation_sudo_roles_mls_range }}"
+          - "{{ foundation_sudo_roles_user }}"
+      when: current_seuser.stdout | trim != "staff_u"
+      changed_when: true
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "foundation_sudo_roles | clean snapd residue from sudoers secure_path"
+      ansible.builtin.lineinfile:
+        path: "/etc/sudoers"
+        regexp: '^Defaults\s+secure_path\s*='
+        line: "Defaults    secure_path = {{ foundation_sudo_roles_secure_path }}"
+        owner: root
+        group: root
+        mode: "0440"
+        backup: true
+        validate: "visudo -c -f %s"
+      become: true
+
+    - name: "foundation_sudo_roles | ensure the CIL publish directory exists"
+      ansible.builtin.file:
+        path: "{{ foundation_sudo_roles_cil_module_path | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "foundation_sudo_roles | install staff_extras CIL module file"
+      ansible.builtin.copy:
+        src: "files/staff_extras.cil"
+        dest: "{{ foundation_sudo_roles_cil_module_path }}"
+        owner: root
+        group: root
+        mode: "0640"
+      register: cil_file_state
+      become: true
+
+    - name: "foundation_sudo_roles | load staff_extras CIL module at priority {{ foundation_sudo_roles_cil_priority }}"
+      ansible.builtin.command:
+        argv:
+          - semodule
+          - "-X"
+          - "{{ foundation_sudo_roles_cil_priority | string }}"
+          - "-i"
+          - "{{ foundation_sudo_roles_cil_module_path }}"
+      when: cil_file_state.changed | default(false)
+      changed_when: true
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "foundation_sudo_roles | detect sudoers.d drop-ins with custom logfile= directive"
+      ansible.builtin.shell: >-
+        grep -lE '^[[:space:]]*Defaults![^[:space:]]+[[:space:]]+logfile=' /etc/sudoers.d/* 2>/dev/null || true
+      register: custom_logfile_dropins
+      changed_when: false
+      become: true
+
+    - name: "foundation_sudo_roles | extract custom logfile paths"
+      ansible.builtin.shell: >-
+        awk -F'logfile=' '/^[[:space:]]*Defaults![^[:space:]]+[[:space:]]+logfile=/ {
+          sub(/[[:space:]]+#.*/, "", $2); sub(/[[:space:]]+$/, "", $2); print $2
+        }' {{ custom_logfile_dropins.stdout_lines | join(" ") }}
+      register: custom_logfile_paths
+      when: custom_logfile_dropins.stdout_lines | length > 0
+      changed_when: false
+      become: true
+
+    - name: "foundation_sudo_roles | label custom sudo logfile paths as sudo_log_t"
+      ansible.builtin.command:
+        argv:
+          - semanage
+          - fcontext
+          - "-a"
+          - "-t"
+          - "sudo_log_t"
+          - "{{ item | regex_escape }}"
+      loop: "{{ custom_logfile_paths.stdout_lines | default([]) }}"
+      register: fcontext_result
+      changed_when: fcontext_result.rc == 0
+      failed_when:
+        - fcontext_result.rc != 0
+        - "'already defined' not in (fcontext_result.stderr | default(''))"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "foundation_sudo_roles | restorecon custom sudo logfile paths"
+      ansible.builtin.command:
+        argv:
+          - restorecon
+          - "-Fv"
+          - "{{ item }}"
+      loop: "{{ custom_logfile_paths.stdout_lines | default([]) }}"
+      register: restorecon_result
+      changed_when: "'relabeled' in (restorecon_result.stdout | default(''))"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+  rescue:
+
+    - name: "foundation_sudo_roles | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          foundation_sudo_roles apply step failed. Auto-rollback is intentionally
+          not performed; an unconfined fallback applied without operator awareness
+          would mask the failure. Manual recovery options:
+
+            1. Revert the per-user mapping to unconfined:
+                 sudo -r sysadm_r -t sysadm_t \
+                   semanage login -m -s unconfined_u {{ foundation_sudo_roles_user }}
+
+            2. Coarse emergency brake (logs denials but does not enforce):
+                 sudo -r sysadm_r -t sysadm_t setenforce 0
+
+          The lineinfile backup written alongside /etc/sudoers is the rollback
+          source for the secure_path edit.
+
+  tags:
+    - foundation_sudo_roles
+    - apply
+
+- name: "foundation_sudo_roles | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  environment:
+    FOUNDATION_SUDO_ROLES_USER: "{{ foundation_sudo_roles_user }}"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - foundation_sudo_roles
+    - verify

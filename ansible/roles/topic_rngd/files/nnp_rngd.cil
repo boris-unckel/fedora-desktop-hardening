@@ -1,0 +1,2 @@
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+(allow init_t rngd_t (process2 (nnp_transition)))

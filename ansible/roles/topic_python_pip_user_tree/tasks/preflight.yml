@@ -1,0 +1,129 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_python_pip_user_tree. Block apply when the host
+# family is wrong or when the active interpreter's stdlib path does not live
+# under /usr/lib64/. Marker presence, RPM-non-ownership, user-tree presence,
+# and sudo-pip-layer probes are non-fatal informational reports.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_python_pip_user_tree targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | required packages present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_python_pip_user_tree_required_packages }}"
+
+- name: "preflight | discover active interpreter version"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "-c"
+      - "import sys; print('%d.%d' % sys.version_info[:2])"
+  register: py_version
+  changed_when: false
+
+- name: "preflight | discover active stdlib path via sysconfig"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "-c"
+      - "import sysconfig; print(sysconfig.get_path('stdlib'))"
+  register: py_stdlib
+  changed_when: false
+
+- name: "preflight | record discovered marker target"
+  ansible.builtin.set_fact:
+    topic_python_pip_user_tree_resolved_stdlib: "{{ py_stdlib.stdout | trim }}"
+    topic_python_pip_user_tree_resolved_marker_path: "{{ py_stdlib.stdout | trim }}/{{ topic_python_pip_user_tree_marker_filename }}"
+    topic_python_pip_user_tree_resolved_python_minor: "{{ py_version.stdout | trim }}"
+
+- name: "preflight | fail-fast when stdlib path is not under /usr/lib64/"
+  ansible.builtin.fail:
+    msg: |
+      Active Python interpreter reports stdlib path
+      {{ topic_python_pip_user_tree_resolved_stdlib }}, which is not under
+      /usr/lib64/. The Fedora 44 x86_64 invariant is that the marker lands
+      under /usr/lib64/python3.X/. The manifest needs revision before
+      applying this role on a non-x86_64 future host.
+  when:
+    - not (topic_python_pip_user_tree_resolved_stdlib is match('^/usr/lib64/python3\\.[0-9]+$'))
+
+- name: "preflight | report discovered marker target"
+  ansible.builtin.debug:
+    msg: >
+      Active interpreter python{{ topic_python_pip_user_tree_resolved_python_minor }};
+      stdlib={{ topic_python_pip_user_tree_resolved_stdlib }};
+      marker target={{ topic_python_pip_user_tree_resolved_marker_path }}.
+
+- name: "preflight | RPM-non-ownership probe (informational; RPM-owned marker is a bug-class signal)"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-qf"
+      - "{{ topic_python_pip_user_tree_resolved_marker_path }}"
+  register: marker_rpm_owner
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report RPM-non-ownership outcome"
+  ansible.builtin.debug:
+    msg: >
+      rpm -qf {{ topic_python_pip_user_tree_resolved_marker_path }}:
+      rc={{ marker_rpm_owner.rc }} stdout={{ marker_rpm_owner.stdout | trim }}.
+      Expected on a correctly applied host: rc != 0 or stdout contains
+      'is not owned by any package'. An RPM-owned marker indicates a
+      packaging change the operator must escalate before applying this role.
+
+- name: "preflight | enumerate user-tree presence per Python minor"
+  ansible.builtin.find:
+    paths: "{{ topic_python_pip_user_tree_user_home }}/.local/lib"
+    patterns: "python3.*"
+    file_type: directory
+  register: user_tree_dirs
+  changed_when: false
+  failed_when: false
+  when: topic_python_pip_user_tree_check_orphan_user_trees | bool
+
+- name: "preflight | report user-tree presence"
+  ansible.builtin.debug:
+    msg: >
+      User-tree directories found under
+      {{ topic_python_pip_user_tree_user_home }}/.local/lib/:
+      {{ (user_tree_dirs.files | default([])) | map(attribute='path') | list }}.
+  when: topic_python_pip_user_tree_check_orphan_user_trees | bool
+
+- name: "preflight | enumerate sudo-pip layer presence"
+  ansible.builtin.shell: |
+    set +e
+    ls -d /usr/local/lib/python3.* 2>/dev/null
+    ls /usr/local/bin/pip* /usr/local/sbin/pip* 2>/dev/null
+    exit 0
+  args:
+    executable: /bin/bash
+  register: userlocal_pip_probe
+  changed_when: false
+  failed_when: false
+  when: topic_python_pip_user_tree_check_userlocal_pip_layer | bool
+
+- name: "preflight | report sudo-pip layer presence"
+  ansible.builtin.debug:
+    msg: >
+      sudo-pip layer probe (non-empty stdout indicates accumulated
+      /usr/local/lib/python3.X/ or /usr/local/{bin,sbin}/pip* residue from
+      pre-marker sudo pip install invocations; operator runs the cleanup
+      from the topic Reference under "Orphan tree cleanup"):
+      {{ userlocal_pip_probe.stdout | default('') | trim }}.
+  when: topic_python_pip_user_tree_check_userlocal_pip_layer | bool

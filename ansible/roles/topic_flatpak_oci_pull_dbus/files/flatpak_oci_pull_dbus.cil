@@ -1,0 +1,13 @@
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+;; flatpak_oci_pull_dbus.cil — patches one stock-policy gap on Fedora 44
+;; that affects `flatpak install --system` from OCI-typed remotes when the
+;; install is issued from sysadm_t (the role-switched admin context for
+;; staff_u-mapped operators).
+;;
+;; Functional rule: OCI-typed remotes negotiate a pre-pull access token
+;; via the flatpak-oci-authenticator D-Bus service, which connects to the
+;; uid=0 D-Bus session bus at /run/user/0/bus (type unconfined_dbusd_t).
+;; Stock policy lacks the connectto allow on the bus socket for sysadm_t,
+;; so the install aborts before the OCI manifest fetch is attempted.
+;; ostree-typed remotes are unaffected (no token-request path).
+(allow sysadm_t unconfined_dbusd_t (unix_stream_socket (connectto)))

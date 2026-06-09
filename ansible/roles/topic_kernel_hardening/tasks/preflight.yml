@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_kernel_hardening. Block apply when the host
+# family is wrong or when any of the four shipping configuration paths
+# does not resolve to its expected SELinux type. The F44 baseline sysctl
+# recon and the BLS bootloader recon are non-fatal reports.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_kernel_hardening targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | matchpathcon shipping paths"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "{{ item.key }}"
+  register: matchpathcon_results
+  changed_when: false
+  failed_when: false
+  loop: "{{ topic_kernel_hardening_expected_file_modes | dict2items }}"
+
+- name: "preflight | fail-fast on unexpected SELinux type for any shipping path"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon {{ item.item.key }} returned an unexpected mapping:
+      {{ item.stdout | trim }}
+      Expected SELinux type: {{ item.item.value.seltype }}.
+  when:
+    - (item.stdout | regex_search(item.item.value.seltype)) is none
+  loop: "{{ matchpathcon_results.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: "preflight | F44 sysctl-baseline recon (non-fatal)"
+  ansible.builtin.shell: >
+    sysctl -a 2>/dev/null
+    | grep -E '^(kernel\.kptr_restrict|kernel\.dmesg_restrict|kernel\.yama|kernel\.kexec_load_disabled|kernel\.sysrq|kernel\.unprivileged_bpf_disabled|net\.ipv4\.conf\.(all|default)\.(rp_filter|accept_redirects|send_redirects|log_martians)|net\.ipv6\.conf\.(all|default)\.accept_redirects|fs\.suid_dumpable|fs\.protected_(fifos|regular|hardlinks|symlinks)|dev\.tty\.ldisc_autoload|net\.core\.bpf_jit_harden) ='
+    || true
+  args:
+    executable: /bin/bash
+  register: sysctl_baseline_recon
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report F44 sysctl-baseline recon"
+  ansible.builtin.debug:
+    msg: >
+      Pre-hardening sysctl baseline (non-fatal; the topic's apply is auditable
+      as a delta against this stock-Fedora baseline):
+      {{ sysctl_baseline_recon.stdout | trim }}.
+
+- name: "preflight | F44 BLS bootloader recon (non-fatal)"
+  ansible.builtin.command:
+    argv:
+      - grubby
+      - "--info=DEFAULT"
+  register: grubby_default_recon
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report F44 BLS bootloader recon"
+  ansible.builtin.debug:
+    msg: >
+      Default kernel BLS entry (non-fatal; the topic's grubby --update-kernel=ALL
+      apply is auditable as a delta against the existing argument set):
+      {{ grubby_default_recon.stdout | trim }}.
+
+- name: "preflight | running-kernel cmdline recon (non-fatal)"
+  ansible.builtin.slurp:
+    src: "/proc/cmdline"
+  register: cmdline_recon
+  failed_when: false
+
+- name: "preflight | report running-kernel cmdline recon"
+  ansible.builtin.debug:
+    msg: >
+      Running kernel cmdline (non-fatal; expect the five-flag set absent on a
+      pre-deploy host and present after the next reboot following deploy):
+      {{ (cmdline_recon.content | b64decode | trim) | default('?', true) }}.
+
+- name: "preflight | currently-loaded module recon (non-fatal)"
+  ansible.builtin.shell: |
+    set +e
+    lsmod | head -30
+    exit 0
+  args:
+    executable: /bin/bash
+  register: lsmod_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report currently-loaded module recon"
+  ansible.builtin.debug:
+    msg: >
+      Currently-loaded modules (non-fatal; the install /bin/true rules block
+      autoload and explicit modprobe but do not unload modules already loaded
+      at apply time — `dracut --force` and a reboot are required for those
+      to clear):
+      {{ lsmod_recon.stdout | trim }}.

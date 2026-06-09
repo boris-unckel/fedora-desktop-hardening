@@ -1,0 +1,193 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_thermald
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying does not change state on a correctly
+# configured host; see README.md "Idempotence notes").
+#
+# Modify ordering invariant:
+#   1. Push the three drop-in INI files.
+#   2. restorecon on the drop-in files (handler).
+#   3. Daemon-reload + restart (handlers).
+# A change to any of the three drop-ins notifies the handler chain.
+# Live-state probe is read-only.
+#
+# No semodule install handler. This topic ships no CIL module; the
+# Layer-2 CIL bootstrap surface is not exercised here. There is also no
+# meta: flush_handlers synchronisation between a CIL load and the drop-
+# in push, because there is no CIL load.
+
+- name: "topic_thermald | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_thermald
+    - preflight
+
+- name: "topic_thermald | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_thermald
+    - probe
+
+- name: "topic_thermald | apply configuration"
+  block:
+
+    - name: "topic_thermald | drop-in directory present"
+      ansible.builtin.file:
+        path: "{{ topic_thermald_dropin_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "topic_thermald | install 99-hardening.conf"
+      ansible.builtin.copy:
+        src: "99-hardening.conf"
+        dest: "{{ topic_thermald_dropin_dir }}/99-hardening.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_thermald dropin changed"
+
+    - name: "topic_thermald | install 99-nnp.conf"
+      ansible.builtin.copy:
+        src: "99-nnp.conf"
+        dest: "{{ topic_thermald_dropin_dir }}/99-nnp.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_thermald dropin changed"
+
+    - name: "topic_thermald | install 99-process-restrict.conf"
+      ansible.builtin.copy:
+        src: "99-process-restrict.conf"
+        dest: "{{ topic_thermald_dropin_dir }}/99-process-restrict.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_thermald dropin changed"
+
+    - name: "topic_thermald | read live MainPID"
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - "show"
+          - "-p"
+          - "MainPID"
+          - "--value"
+          - "thermald.service"
+      register: live_main_pid
+      changed_when: false
+
+    - name: "topic_thermald | read live SELinux domain (DPTF-bearing branch)"
+      ansible.builtin.shell: >
+        awk -F: '{print $3}' /proc/{{ live_main_pid.stdout | trim }}/attr/current
+      args:
+        executable: /bin/bash
+      register: live_domain
+      changed_when: false
+      failed_when: false
+      when: (live_main_pid.stdout | trim) not in ['', '0']
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_thermald | read live UID/GID (DPTF-bearing branch)"
+      ansible.builtin.shell: >
+        awk '/^Uid:/{print "Uid="$2} /^Gid:/{print "Gid="$2}'
+        /proc/{{ live_main_pid.stdout | trim }}/status
+      args:
+        executable: /bin/bash
+      register: live_uid_gid
+      changed_when: false
+      failed_when: false
+      when: (live_main_pid.stdout | trim) not in ['', '0']
+
+    - name: "topic_thermald | read AVC count since boot"
+      ansible.builtin.shell: >
+        ausearch -m AVC,USER_AVC -ts boot
+        | grep -cE '(thermald|nnp_transition)'
+        || true
+      args:
+        executable: /bin/bash
+      register: avc_count
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_thermald | read SECCOMP count since boot"
+      ansible.builtin.shell: >
+        ausearch -m seccomp -ts boot
+        | grep -c 'comm="thermald"'
+        || true
+      args:
+        executable: /bin/bash
+      register: seccomp_count
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_thermald | read DPTF-less journal anchor count (DPTF-less branch)"
+      ansible.builtin.shell: >
+        journalctl -u thermald.service -b --no-pager
+        | grep -cE '{{ topic_thermald_dptf_less_journal_anchor }}'
+        || true
+      args:
+        executable: /bin/bash
+      register: dptf_less_anchor_count
+      changed_when: false
+      failed_when: false
+      when: (live_main_pid.stdout | trim) in ['', '0']
+
+    - name: "topic_thermald | report live state"
+      ansible.builtin.debug:
+        msg: >
+          thermald MainPID={{ live_main_pid.stdout | trim }},
+          SELinux domain={{ (live_domain.stdout | default('SKIP — DPTF-less branch')) | trim }},
+          live UID/GID={{ (live_uid_gid.stdout | default('SKIP — DPTF-less branch')) | trim | replace('\n', ' ') }},
+          DPTF-less journal anchor matches={{ (dptf_less_anchor_count.stdout | default('SKIP — DPTF-bearing branch')) | trim }},
+          AVC count since boot={{ (avc_count.stdout | default('0')) | trim }},
+          SECCOMP count since boot={{ (seccomp_count.stdout | default('0')) | trim }}.
+
+  rescue:
+
+    - name: "topic_thermald | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_thermald apply step failed. Auto-rollback is intentionally
+          not performed; rolling back the three drop-ins requires an
+          operator decision about which stage to revert (process-
+          restrictions only, NNP as well, or all three drop-ins). See
+          the topic Reference under "Verification" for the three-stage
+          rollback sequence and the recover-from-boot-failure how-to for
+          the boot-failure variant.
+
+  tags:
+    - topic_thermald
+    - apply
+
+- name: "topic_thermald | flush handlers before verify"
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - topic_thermald
+    - apply
+
+- name: "topic_thermald | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_thermald
+    - verify

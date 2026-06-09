@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_auditd.
+#
+# Three handlers — never four. auditd's stock vendor unit ships
+# RefuseManualStop=yes, so `systemctl restart auditd` is structurally
+# unavailable (the stop step of the stop-then-start sequence is refused).
+# Drop-in changes activate only on reboot; the role's tasks/main.yml
+# ends with a pause: that prompts the operator for a reboot.
+#
+# Two notification channels:
+#   "topic_auditd cil changed"    — fires on a change to the CIL source
+#                                    file. Triggers semodule install
+#                                    under sysadm_r.
+#   "topic_auditd dropin changed" — fires on a change to either drop-in
+#                                    file. Triggers restorecon and
+#                                    daemon-reload (no restart handler).
+
+- name: "topic_auditd | semodule install nnp_auditd"
+  ansible.builtin.command:
+    argv:
+      - semodule
+      - "-X"
+      - "{{ topic_auditd_cil_priority | string }}"
+      - "-i"
+      - "{{ topic_auditd_cil_dir }}/{{ topic_auditd_cil_module_name }}.cil"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_auditd cil changed"
+
+- name: "topic_auditd | restorecon auditd drop-ins"
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-v"
+      - "{{ topic_auditd_dropin_dir }}/99-hardening.conf"
+      - "{{ topic_auditd_dropin_dir }}/99-nnp.conf"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_auditd dropin changed"
+
+- name: "topic_auditd | daemon-reload"
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "topic_auditd dropin changed"

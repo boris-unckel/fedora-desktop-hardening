@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+galaxy_info:
+  role_name: topic_tuned
+  description: "tuned hardening (one-artefact Phase-A baseline drop-in with two operator-tunable opt-outs; deferred process-internal kernel-restriction layer; no topic-owned CIL module)."
+  license: "MIT"
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Fedora
+      versions:
+        - "44"
+        - "45"
+
+# Note: foundation_selinux_cil_bootstrap is intentionally absent. This
+# topic ships no topic-owned CIL module — the Phase-A baseline does not
+# enable NoNewPrivileges=, so the kernel-level NNP-transition constraint
+# is not exercised, and the corrective CIL extension is consequently not
+# required. The Layer-2 CIL bootstrap mechanism is therefore not load-
+# bearing for this role.
+dependencies:
+  - role: foundation_umask
+  - role: foundation_sudo_roles
+  - role: foundation_audit_logging_baseline

@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_keepassxc. Block apply when the host family is
+# wrong, when the keepassxc package is missing, or when the operator-chosen
+# database directory is absent. The custom-type collision pre-test gates on a
+# stock-policy or foreign-module collision: if any of the three type names
+# already exists in policy but the topic-owned keepassxc_extras module is not
+# loaded, apply is blocked (manifest revision required). On an idempotent
+# re-run the types exist and the modules are loaded — that case passes. The
+# SELinux mode is captured as informational: enforcing and permissive are both
+# acceptable, because the file-type cut is enforced through the
+# staff_t x keepassxc_db_t no-allow path, not through a typepermissive setting.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_keepassxc targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_keepassxc_required_packages }}"
+
+- name: "preflight | operator database directory present (fail-fast on missing)"
+  ansible.builtin.stat:
+    path: "{{ topic_keepassxc_database_dir }}"
+  register: db_dir_check
+  failed_when:
+    - not (db_dir_check.stat.exists | default(false))
+      or not (db_dir_check.stat.isdir | default(false))
+
+- name: "preflight | custom types present in policy?"
+  ansible.builtin.shell: >
+    set -o pipefail;
+    seinfo -t | grep -wE 'keepassxc_t|keepassxc_exec_t|keepassxc_db_t' || true
+  args:
+    executable: /bin/bash
+  register: kp_types
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | topic-owned modules loaded?"
+  ansible.builtin.shell: >
+    set -o pipefail;
+    semodule -lfull | grep -w keepassxc || true
+  args:
+    executable: /bin/bash
+  register: kp_modules
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | gate on stock-type or foreign-module collision"
+  ansible.builtin.assert:
+    that:
+      - (kp_types.stdout | trim) == '' or (kp_modules.stdout is search('keepassxc_extras'))
+    success_msg: >
+      Type/module state consistent:
+      {{ 'clean install (no custom types yet)' if (kp_types.stdout | trim) == ''
+         else 'topic-owned modules already loaded (idempotent re-run)' }}.
+    fail_msg: >
+      One of keepassxc_t / keepassxc_exec_t / keepassxc_db_t exists in policy
+      but the topic-owned keepassxc_extras module is not loaded — a stock-policy
+      or foreign-module collision. Resolve before applying.
+
+- name: "preflight | SELinux mode baseline (informational)"
+  ansible.builtin.command:
+    argv:
+      - getenforce
+  register: selinux_mode
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report SELinux mode"
+  ansible.builtin.debug:
+    msg: >
+      SELinux mode: {{ selinux_mode.stdout | default('?') | trim }}.
+      Enforcing or Permissive are both acceptable; the file-type cut is
+      enforced via the staff_t x keepassxc_db_t no-allow path.

@@ -1,0 +1,169 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_plymouth. Block apply when the host family
+# is wrong, when the plymouth-start vendor unit is missing, when the
+# plymouth package is not installed, or when matchpathcon for
+# /usr/bin/plymouthd does not return plymouthd_exec_t. The stock-policy
+# nnp_transition pre-test for the main domain, the F44 stock-unit
+# near-empty directive recon, and the pre-deploy splash baseline are
+# captured as non-fatal reports.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_plymouth targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | plymouth-start.service vendor unit present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/plymouth-start.service"
+  register: vendor_unit
+  failed_when: not (vendor_unit.stat.exists | default(false))
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_plymouth_required_packages }}"
+
+- name: "preflight | F44 stock-unit near-empty directive recon"
+  ansible.builtin.shell: >
+    grep -E
+    '^(RuntimeDirectory|StateDirectory|ConfigurationDirectory|LogsDirectory|ProtectSystem|ProtectHome|ProtectKernel|ProtectControl|ProtectClock|ProtectHostname|ProtectProc|PrivateTmp|PrivateDevices|PrivateUsers|PrivateNetwork|RestrictNamespaces|RestrictRealtime|RestrictSUIDSGID|RestrictAddressFamilies|LockPersonality|MemoryDenyWriteExecute|SystemCallFilter|SystemCallArchitectures|DeviceAllow|CapabilityBoundingSet|NoNewPrivileges|AmbientCapabilities|UMask|ProcSubset|User|Group|Type|ExecStart|ExecReload|Slice|Restart|NotifyAccess)='
+    /usr/lib/systemd/system/plymouth-start.service
+    || true
+  args:
+    executable: /bin/bash
+  register: stock_directive_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report stock unit directive recon"
+  ansible.builtin.debug:
+    msg: >
+      Stock plymouth-start.service near-empty baseline directives
+      (non-fatal report; a future package version that adds a directive
+      overlapping a topic-owned directive requires manifest revision
+      before applying this role): {{ stock_directive_recon.stdout | trim }}.
+
+- name: "preflight | matchpathcon for /usr/bin/plymouthd"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "{{ topic_plymouth_daemon_bin_path }}"
+  register: matchpathcon_bin
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast if matchpathcon returns non-plymouthd_exec_t"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon for {{ topic_plymouth_daemon_bin_path }} returned a
+      non-plymouthd_exec_t mapping:
+        {{ matchpathcon_bin.stdout | trim }}
+      The stock fcontext for the daemon binary has been displaced. The
+      manifest needs revision before applying this role. Open a fresh
+      topic session against an extended manifest.
+  when:
+    - (matchpathcon_bin.stdout | regex_search('plymouthd_exec_t')) is none
+
+- name: "preflight | report matchpathcon outcome"
+  ansible.builtin.debug:
+    msg: >
+      matchpathcon {{ topic_plymouth_daemon_bin_path }}:
+      {{ matchpathcon_bin.stdout | trim }}.
+
+- name: "preflight | SELinux nnp_transition pre-test for main domain (expected empty)"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "init_t"
+      - "-t"
+      - "{{ topic_plymouth_expected_selinux_domain }}"
+      - "-c"
+      - "process2"
+      - "-p"
+      - "nnp_transition"
+  register: nnp_check
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report SELinux nnp_transition pre-test outcome"
+  ansible.builtin.debug:
+    msg: >
+      SELinux nnp_transition pre-test for
+      init_t -> {{ topic_plymouth_expected_selinux_domain }}:
+      {{ 'EMPTY (expected; topic CIL is required and will be installed)'
+         if (nnp_check.stdout | trim) == '' else
+         'NON-EMPTY (the rule is already in policy; topic CIL install at '
+         + 'priority 400 is idempotent and overlays without harm)' }}.
+
+- name: "preflight | splash baseline | unit active"
+  ansible.builtin.shell: >
+    systemctl is-active plymouth-start.service || true
+  args:
+    executable: /bin/bash
+  register: preflight_unit_active
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | splash baseline | plymouth-start state"
+  ansible.builtin.shell: >
+    systemctl show plymouth-start.service -p ActiveState,SubState,Result --value || true
+  args:
+    executable: /bin/bash
+  register: preflight_plymouth_state
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | splash baseline | plymouth-quit-wait state"
+  ansible.builtin.shell: >
+    systemctl show plymouth-quit-wait.service -p ActiveState,SubState,Result --value || true
+  args:
+    executable: /bin/bash
+  register: preflight_quitwait_state
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | splash baseline | startup journal tail"
+  ansible.builtin.shell: >
+    journalctl -u plymouth-start.service -b 0 --no-pager | tail -10 || true
+  args:
+    executable: /bin/bash
+  register: preflight_journal_tail
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | splash baseline | error stream tail"
+  ansible.builtin.shell: >
+    journalctl -b 0 -p err -u plymouth-start.service --no-pager | tail -20 || true
+  args:
+    executable: /bin/bash
+  register: preflight_err_tail
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report splash baseline"
+  ansible.builtin.debug:
+    msg: >
+      Pre-deploy splash baseline (non-fatal report; a non-empty error
+      stream signals a pre-existing plymouth issue that the operator
+      should investigate before deploying this role):
+      unit-active={{ preflight_unit_active.stdout | trim }};
+      plymouth-start={{ preflight_plymouth_state.stdout | trim | replace('\n', '/') }};
+      plymouth-quit-wait={{ preflight_quitwait_state.stdout | trim | replace('\n', '/') }};
+      journal-tail-bytes={{ (preflight_journal_tail.stdout | default('') | length) }};
+      err-journal-tail-bytes={{ (preflight_err_tail.stdout | default('') | length) }}.

@@ -1,0 +1,4 @@
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+(allow aide_t dosfs_t (filesystem (getattr)))
+(allow aide_t xdm_var_run_t (sock_file (write)))
+(allow aide_t xdm_t (unix_stream_socket (connectto)))

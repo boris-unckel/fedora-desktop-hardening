@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_python_pip_user_tree.
+#
+# The topic ships exactly one persistent on-disk artefact (the PEP-668 marker)
+# and no daemon. There are no daemon-reload, restart, or restorecon handlers.
+# The marker write itself is content-hash-idempotent through ansible.builtin.
+# template; a re-render of the same body is a no-op and triggers no notification.
+# The handler list is intentionally empty.

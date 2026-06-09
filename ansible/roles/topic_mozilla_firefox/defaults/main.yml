@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_mozilla_firefox. Override in group_vars or playbook.
+
+# Required packages on Fedora 44+. Preflight asserts presence and aborts
+# fail-fast on a missing flatpak or ostree entry.
+topic_mozilla_firefox_required_packages:
+  - flatpak
+  - ostree
+
+# Operator-mapping applicability anchor. unconfined_u logins exhibit the same
+# end-state behaviour, but the surrounding hardening posture is owned by
+# separate articles; the role completes on unconfined_u with an informational
+# note and does not abort.
+topic_mozilla_firefox_expected_seuser_substring: "staff_u"
+
+# Flathub remote name and application identity.
+topic_mozilla_firefox_flathub_remote_name: "flathub"
+topic_mozilla_firefox_application_id: "org.mozilla.firefox"
+topic_mozilla_firefox_branch: "stable"
+
+# Canonical four-package RPM removal set. The role's preflight runs a
+# SONAME-aware reverse-dependency probe against this set before staging the
+# removal.
+topic_mozilla_firefox_rpm_removal_set:
+  - firefox
+  - firefox-langpacks
+  - mozilla-openh264
+  - mozilla-filesystem
+
+# Sandbox-override structured mapping. The defaults match the byte-exact
+# `--nofilesystem=host --nofilesystem=home --filesystem=xdg-download
+# --nosocket=x11 --socket=wayland` invocation documented in the Reference.
+topic_mozilla_firefox_sandbox_override:
+  filesystems_deny:
+    - host
+    - home
+  filesystems_allow:
+    - xdg-download
+  sockets_deny:
+    - x11
+  sockets_allow:
+    - wayland
+
+# Per-Firefox-profile inventory. Operator declares the per-host profile names
+# the role should seed and to which it should apply the VAAPI preference seed.
+# Empty by default — no per-profile action runs unless the operator populates
+# this list.
+topic_mozilla_firefox_profiles: []
+
+# Operator-side path to a host-side profile-tree archive. Empty by default;
+# operator declares the per-host snapshot path if profile-seeding from a prior
+# RPM Firefox install is desired. Documented but not consumed automatically by
+# the rollback path.
+topic_mozilla_firefox_external_snapshot_path: ""
+
+# Byte-exact two-line user_pref(...) block written under a unique blockinfile
+# marker into each profile's user.js. Tunable to allow operator-side
+# customization of the VAAPI surface beyond the canonical pair.
+topic_mozilla_firefox_vaapi_user_js_block: |
+  // VAAPI hardware video decoding (operator-side preference seed)
+  user_pref("media.ffmpeg.vaapi.enabled", true);
+  user_pref("media.hardware-video-decoding.force-enabled", true);
+
+# Portal-permission posture for the application's surfaces under
+# org.freedesktop.impl.portal.access. Default 'ask' for camera, microphone,
+# and location: the role only writes a `flatpak permission-set ... no`
+# invocation when the operator overrides one of these to 'no'. The deploy
+# state retains the per-call confirmation prompt path for the videocall
+# workflow.
+topic_mozilla_firefox_portal_permission_camera: "ask"
+topic_mozilla_firefox_portal_permission_microphone: "ask"
+topic_mozilla_firefox_portal_permission_location: "ask"
+
+# Path to the system-wide Flatpak repo configuration. The preflight reads the
+# `[remote "flathub"]` section's `collection-id=` line as a precondition
+# signal; missing binding emits an informational note naming the
+# flatpak-collection-id sibling Topic.
+topic_mozilla_firefox_repo_config_path: "/var/lib/flatpak/repo/config"

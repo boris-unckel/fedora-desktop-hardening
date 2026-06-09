@@ -1,0 +1,117 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: foundation_selinux_cil_bootstrap
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying does not change state on a correctly
+# configured host; see README.md "Idempotence notes").
+#
+# Layer 2 of the Foundation tier; depends on foundation_umask (Layer 0)
+# and foundation_sudo_roles (Layer 1). The loader contract requires
+# sysadm_t for module-store reads, but this role's modify steps are
+# package presence, directory presence, and a read-only SELinux state
+# probe — none of which call semodule. Roles that ship CIL modules
+# perform the semodule install in their own tasks.
+
+- name: "foundation_selinux_cil_bootstrap | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - foundation_selinux_cil_bootstrap
+    - preflight
+
+- name: "foundation_selinux_cil_bootstrap | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - foundation_selinux_cil_bootstrap
+    - probe
+
+- name: "foundation_selinux_cil_bootstrap | apply configuration"
+  block:
+
+    - name: "foundation_selinux_cil_bootstrap | required tooling packages present"
+      ansible.builtin.dnf:
+        name: "{{ foundation_selinux_cil_bootstrap_required_packages }}"
+        state: present
+      become: true
+
+    - name: "foundation_selinux_cil_bootstrap | custom-CIL source directory present"
+      ansible.builtin.file:
+        path: "{{ foundation_selinux_cil_bootstrap_directory }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ foundation_selinux_cil_bootstrap_directory_mode }}"
+      become: true
+
+    - name: "foundation_selinux_cil_bootstrap | read live SELinux runtime mode"
+      ansible.builtin.command:
+        argv:
+          - getenforce
+      register: live_runtime_mode
+      changed_when: false
+
+    - name: "foundation_selinux_cil_bootstrap | report live runtime mode"
+      ansible.builtin.debug:
+        msg: >
+          SELinux runtime mode is {{ live_runtime_mode.stdout | trim }}.
+          The loader is operational under Enforcing and Permissive; the role
+          does not flip enforcement state, which is a deliberate operator
+          action.
+
+    - name: "foundation_selinux_cil_bootstrap | read /etc/selinux/config"
+      ansible.builtin.slurp:
+        src: "/etc/selinux/config"
+      register: selinux_config_raw
+      become: true
+
+    - name: "foundation_selinux_cil_bootstrap | parse /etc/selinux/config SELINUX="
+      ansible.builtin.set_fact:
+        selinux_config_mode: >-
+          {{ (selinux_config_raw.content | b64decode).split('\n')
+             | select('match', '^SELINUX=')
+             | map('regex_replace', '^SELINUX=', '')
+             | list | first | default('') }}
+
+    - name: "foundation_selinux_cil_bootstrap | warn on runtime/config divergence"
+      ansible.builtin.debug:
+        msg: >
+          Runtime mode ({{ live_runtime_mode.stdout | trim | lower }})
+          diverges from /etc/selinux/config (SELINUX={{ selinux_config_mode }}).
+          This typically follows a manual setenforce 0 or setenforce 1 and is
+          recoverable without re-applying the role.
+      when: live_runtime_mode.stdout | trim | lower != selinux_config_mode | lower
+
+  rescue:
+
+    - name: "foundation_selinux_cil_bootstrap | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          foundation_selinux_cil_bootstrap apply step failed. Auto-rollback is
+          intentionally not performed; the loader contract has no policy-store
+          mutations to roll back, so the failure is in package or directory
+          state. Manual recovery options:
+
+            1. Inspect dnf transaction history:
+                 sudo dnf history
+
+            2. Check that the source directory exists and has the expected
+               mode:
+                 ls -ldZ /usr/local/share/selinux
+
+            3. Coarse emergency brake (logs denials but does not enforce):
+                 sudo -r sysadm_r -t sysadm_t setenforce 0
+
+  tags:
+    - foundation_selinux_cil_bootstrap
+    - apply
+
+- name: "foundation_selinux_cil_bootstrap | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - foundation_selinux_cil_bootstrap
+    - verify

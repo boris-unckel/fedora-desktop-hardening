@@ -1,0 +1,202 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_auditd
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying does not change state on a correctly
+# configured host; see README.md "Idempotence notes").
+#
+# Modify ordering invariant:
+#   1. Push CIL source to /usr/local/share/selinux/.
+#   2. Install CIL module via semodule -X 400 -i (handler).
+#   3. flush_handlers — the CIL must be loaded before the NNP drop-in.
+#   4. Push the two drop-in INI files (under sysadm_r/sysadm_t so that
+#      the install-time SELinux context lands on auditd_unit_file_t
+#      directly).
+#   5. restorecon on the drop-in files (handler; defence-in-depth no-op
+#      when the install ran from sysadm_t).
+#   6. daemon-reload (handler).
+#   7. pause: prompt the operator for a reboot. NO restart handler is
+#      defined — auditd's stock vendor unit ships RefuseManualStop=yes
+#      and `systemctl restart auditd` would fail, possibly masking a
+#      separate apply-stage error.
+
+- name: "topic_auditd | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_auditd
+    - preflight
+
+- name: "topic_auditd | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_auditd
+    - probe
+
+- name: "topic_auditd | apply configuration"
+  block:
+
+    - name: "topic_auditd | CIL publish directory present"
+      ansible.builtin.file:
+        path: "{{ topic_auditd_cil_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "topic_auditd | install CIL source"
+      ansible.builtin.copy:
+        src: "{{ topic_auditd_cil_module_name }}.cil"
+        dest: "{{ topic_auditd_cil_dir }}/{{ topic_auditd_cil_module_name }}.cil"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_auditd cil changed"
+
+    - name: "topic_auditd | flush handlers (CIL must be loaded before NNP drop-in)"
+      ansible.builtin.meta: flush_handlers
+
+    - name: "topic_auditd | drop-in directory present"
+      ansible.builtin.file:
+        path: "{{ topic_auditd_dropin_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_auditd | install 99-hardening.conf"
+      ansible.builtin.copy:
+        src: "99-hardening.conf"
+        dest: "{{ topic_auditd_dropin_dir }}/99-hardening.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      notify:
+        - "topic_auditd dropin changed"
+
+    - name: "topic_auditd | install 99-nnp.conf"
+      ansible.builtin.copy:
+        src: "99-nnp.conf"
+        dest: "{{ topic_auditd_dropin_dir }}/99-nnp.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      notify:
+        - "topic_auditd dropin changed"
+
+    - name: "topic_auditd | flush handlers so daemon-reload precedes verify"
+      ansible.builtin.meta: flush_handlers
+
+    - name: "topic_auditd | read live MainPID"
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - "show"
+          - "-p"
+          - "MainPID"
+          - "--value"
+          - "auditd.service"
+      register: live_main_pid
+      changed_when: false
+
+    - name: "topic_auditd | read live SELinux domain"
+      ansible.builtin.shell: >
+        awk -F: '{print $3}' /proc/{{ live_main_pid.stdout | trim }}/attr/current
+      args:
+        executable: /bin/bash
+      register: live_domain
+      changed_when: false
+      failed_when: false
+      when: (live_main_pid.stdout | trim) not in ['', '0']
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_auditd | read AVC count since boot"
+      ansible.builtin.shell: >
+        ausearch -m AVC -ts boot
+        | grep -cE '(auditd_t|auditd_exec_t|auditd_log_t|auditd_etc_t|nnp_transition)'
+        || true
+      args:
+        executable: /bin/bash
+      register: avc_count
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_auditd | read post-deploy auditctl -s"
+      ansible.builtin.command:
+        argv:
+          - auditctl
+          - "-s"
+      register: post_deploy_auditctl
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_auditd | report live state"
+      ansible.builtin.debug:
+        msg: >
+          auditd MainPID={{ live_main_pid.stdout | trim }},
+          SELinux domain={{ (live_domain.stdout | default('?')) | trim }},
+          AVC count since boot={{ (avc_count.stdout | default('0')) | trim }},
+          auditctl -s rc={{ post_deploy_auditctl.rc | default('?') }}.
+          NOTE: the topic-owned drop-ins are present on disk and visible
+          in `systemctl cat auditd.service`, but auditd's stock vendor
+          unit ships RefuseManualStop=yes; the directives become
+          effective in the running daemon only after the next reboot.
+
+  rescue:
+
+    - name: "topic_auditd | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_auditd apply step failed. Auto-rollback is intentionally
+          not performed; rolling back the three artefacts requires an
+          operator decision about which stage to revert (NNP plus CIL
+          unload only, or both stages including the topic-owned hardening
+          surface). See the topic Reference under "Verification" for the
+          two-stage rollback sequence and the recover-from-boot-failure
+          how-to for the boot-failure variant.
+
+  tags:
+    - topic_auditd
+    - apply
+
+- name: "topic_auditd | reboot prompt (apply-path is reboot-only)"
+  ansible.builtin.pause:
+    prompt: |
+      Drop-in changes are activated only by reboot; the role pushed the
+      artefacts, ran daemon-reload, and is now prompting the operator
+      for a reboot. Apply-on-running-daemon is structurally unavailable
+      for this Topic.
+
+      Press Enter to acknowledge that the operator will reboot the host
+      out-of-band before relying on the topic-owned hardening surface in
+      the running daemon. Skip with Ctrl-C if running this role in a
+      check-mode pipeline that does not expect to reboot the host.
+  tags:
+    - topic_auditd
+    - apply
+    - reboot-prompt
+
+- name: "topic_auditd | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_auditd
+    - verify

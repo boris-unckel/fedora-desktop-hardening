@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_mozilla_thunderbird. Override in group_vars or playbook.
+
+# Required packages on Fedora 44+. Preflight asserts presence and aborts
+# fail-fast on a missing flatpak or ostree entry.
+topic_mozilla_thunderbird_required_packages:
+  - flatpak
+  - ostree
+
+# Operator-mapping applicability anchor. unconfined_u logins exhibit the same
+# end-state behaviour, but the surrounding hardening posture is owned by
+# separate articles; the role completes on unconfined_u with an informational
+# note and does not abort.
+topic_mozilla_thunderbird_expected_seuser_substring: "staff_u"
+
+# Fedora-OCI remote name and application identity.
+topic_mozilla_thunderbird_fedora_remote_name: "fedora"
+topic_mozilla_thunderbird_fedora_remote_url_substring: "registry.fedoraproject.org"
+topic_mozilla_thunderbird_application_id: "net.thunderbird.Thunderbird"
+topic_mozilla_thunderbird_branch: "stable"
+
+# Canonical four-package RPM removal set: two Thunderbird-specific entries
+# plus two Mozilla-stack-shared entries. The shared entries are idempotent
+# on a host where the sibling Mozilla-stack browser topic has already
+# removed them.
+topic_mozilla_thunderbird_rpm_removal_set:
+  - thunderbird
+  - thunderbird-librnp-rnp
+  - mozilla-openh264
+  - mozilla-filesystem
+
+# Sandbox-override structured mapping. The defaults match the byte-exact
+# `--nofilesystem=host --nofilesystem=home --filesystem=xdg-download
+# --nosocket=x11 --socket=wayland` invocation documented in the Reference.
+topic_mozilla_thunderbird_sandbox_override:
+  filesystems_deny:
+    - host
+    - home
+  filesystems_allow:
+    - xdg-download
+  sockets_deny:
+    - x11
+  sockets_allow:
+    - wayland
+
+# Per-Thunderbird-profile inventory. Operator declares the per-host profile
+# directory names the role should pack into the profile snapshot and seed.
+# Empty by default — no per-profile action runs unless the operator populates
+# this list.
+topic_mozilla_thunderbird_profiles: []
+
+# Operator-side path to a host-side profile-tree archive. Empty by default;
+# operator declares the per-host snapshot path if profile-seeding from a
+# prior RPM Thunderbird install is desired. The seeded archive carries the
+# operator's full OpenPGP private key material (key4.db plus OpenPGP-key-store
+# files inside the seeded profile tree); the snapshot path must be on
+# operator-trusted storage. Documented but not consumed automatically by the
+# rollback path.
+topic_mozilla_thunderbird_external_snapshot_path: ""
+
+# Portal-permission posture for the application's surfaces under
+# org.freedesktop.impl.portal.access. Default 'no' for camera, microphone,
+# and location: a mail-client workflow has no first-class use of those
+# surfaces, and the hard-deny short-circuits the per-call portal prompt at
+# the portal backend before the application's own UI surfaces a Yes/No
+# dialog. The role writes a `flatpak permission-set ... no` invocation per
+# entry; an operator who needs one of the three surfaces under this
+# application can override the corresponding entry to 'ask' to skip the
+# hard-deny.
+topic_mozilla_thunderbird_portal_permission_camera: "no"
+topic_mozilla_thunderbird_portal_permission_microphone: "no"
+topic_mozilla_thunderbird_portal_permission_location: "no"
+
+# Background-surface portal-permission posture. The application's
+# mail-background-polling and notification surfaces depend on the default
+# 'ask' posture; a hard-deny would suppress new-mail notifications. The role
+# does not write a permission-set entry for the background surface; the
+# variable is documented for completeness only.
+topic_mozilla_thunderbird_portal_permission_background: "ask"
+
+# Path to the system-wide Flatpak repo configuration. The preflight reads
+# the `[remote "fedora"]` section's `url=` line as a precondition signal
+# (the URL must contain the canonical `registry.fedoraproject.org`
+# substring). The Fedora-OCI remote does not require a `collection-id=`
+# binding; the OCI transport does not exercise that surface.
+topic_mozilla_thunderbird_repo_config_path: "/var/lib/flatpak/repo/config"

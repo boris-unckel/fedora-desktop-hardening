@@ -1,0 +1,137 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_network_manager. Block apply when the host
+# family is wrong, when the NetworkManager vendor unit is missing, when
+# the package is not installed, when stock targeted policy has already
+# upstreamed the init_t -> NetworkManager_t : process2 nnp_transition
+# rule (the topic CIL becomes redundant; manifest revision required),
+# when the stock vendor unit has gained a RuntimeDirectory=NetworkManager
+# directive (the -prefix mitigation becomes redundant; manifest revision
+# required), or when matchpathcon for /usr/sbin/NetworkManager returns
+# bin_t (F44 sbin/bin-merge has displaced the stock fcontext mapping;
+# manifest revision required to add an fcontext mitigation task and an
+# f44-sbin-bin-merge cross-link). The pre-deploy connectivity baseline
+# is captured as a fact for post-deploy comparison.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_network_manager targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | NetworkManager.service vendor unit present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/NetworkManager.service"
+  register: vendor_unit
+  failed_when: not (vendor_unit.stat.exists | default(false))
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_network_manager_required_packages }}"
+
+- name: "preflight | stock unit RuntimeDirectory absence check"
+  ansible.builtin.shell: >
+    grep -E '^(RuntimeDirectory|StateDirectory|ConfigurationDirectory|LogsDirectory)='
+    /usr/lib/systemd/system/NetworkManager.service
+    || true
+  args:
+    executable: /bin/bash
+  register: stock_runtime_dir
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast if stock unit ships RuntimeDirectory=NetworkManager"
+  ansible.builtin.fail:
+    msg: |
+      Stock NetworkManager.service has gained a RuntimeDirectory directive:
+      {{ stock_runtime_dir.stdout | trim }}
+      The -prefix mitigation on /run/NetworkManager in 99-hardening.conf is
+      redundant in this case, and the manifest needs revision to declare an
+      alternate end-state for the ReadWritePaths= entry. Open a fresh topic
+      session against an extended manifest before applying this role.
+  when: (stock_runtime_dir.stdout | regex_search('RuntimeDirectory[ \t]*=[ \t]*NetworkManager')) is not none
+
+- name: "preflight | matchpathcon /usr/sbin/NetworkManager"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "/usr/sbin/NetworkManager"
+  register: matchpathcon_check
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast if matchpathcon returns bin_t"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon /usr/sbin/NetworkManager returned a bin_t mapping:
+      {{ matchpathcon_check.stdout | trim }}
+      F44 sbin/bin-merge has displaced the stock NetworkManager_exec_t
+      mapping. The manifest needs revision to add a community.general.
+      sefcontext mitigation task and an f44-sbin-bin-merge cross-link in
+      the topic Reference. Open a fresh topic session against an extended
+      manifest before applying this role.
+  when: (matchpathcon_check.stdout | regex_search('bin_t')) is not none and (matchpathcon_check.stdout | regex_search('NetworkManager_exec_t')) is none
+
+- name: "preflight | report matchpathcon outcome"
+  ansible.builtin.debug:
+    msg: >
+      matchpathcon /usr/sbin/NetworkManager: {{ matchpathcon_check.stdout | trim }}.
+
+- name: "preflight | SELinux nnp_transition pre-test (expected empty)"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "init_t"
+      - "-t"
+      - "{{ topic_network_manager_expected_selinux_domain }}"
+      - "-c"
+      - "process2"
+      - "-p"
+      - "nnp_transition"
+  register: nnp_check
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report SELinux nnp_transition pre-test outcome"
+  ansible.builtin.debug:
+    msg: >
+      SELinux nnp_transition pre-test for
+      init_t -> {{ topic_network_manager_expected_selinux_domain }}:
+      {{ 'EMPTY (expected; topic CIL is required and will be installed)'
+         if (nnp_check.stdout | trim) == '' else
+         'NON-EMPTY (the rule is already in policy; topic CIL install at '
+         + 'priority 400 is idempotent and overlays without harm)' }}.
+
+- name: "preflight | connectivity baseline capture"
+  ansible.builtin.command:
+    argv:
+      - nmcli
+      - "-t"
+      - "-f"
+      - "STATE"
+      - "general"
+  register: preflight_nmcli_baseline
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report connectivity baseline"
+  ansible.builtin.debug:
+    msg: >
+      Pre-deploy nmcli STATE: {{ preflight_nmcli_baseline.stdout | trim }}.
+      A regression from this state post-deploy is the primary signal that
+      a sandbox layer broke a NetworkManager subsystem.

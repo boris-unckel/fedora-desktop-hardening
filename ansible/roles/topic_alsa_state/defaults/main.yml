@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_alsa_state. Override in group_vars or playbook.
+
+# Drop-in directory for alsa-state.service.
+topic_alsa_state_dropin_dir: "/etc/systemd/system/alsa-state.service.d"
+
+# Priority-400 CIL publish directory.
+topic_alsa_state_cil_dir: "/usr/local/share/selinux"
+
+# Required package: the daemon, the unit file, the SELinux service-
+# specific subtype set, and the saved-state file.
+topic_alsa_state_required_packages:
+  - alsa-utils
+
+# Topic-owned CIL module name and load priority.
+topic_alsa_state_cil_module_name: "nnp_alsa"
+topic_alsa_state_cil_priority: 400
+
+# Expected daemon-binary fcontext mapping. Stock targeted policy on
+# Fedora 44 or later resolves /usr/bin/alsactl and /usr/sbin/alsactl
+# (compatibility symlink under sbin/bin equivalency) to alsa_exec_t;
+# a bin_t return is preflight fail-fast (manifest revision required).
+topic_alsa_state_binary_bin_path: "/usr/bin/alsactl"
+topic_alsa_state_binary_sbin_path: "/usr/sbin/alsactl"
+topic_alsa_state_expected_fcontext: "alsa_exec_t"
+
+# Expected SELinux live domain.
+topic_alsa_state_expected_selinux_domain: "alsa_t"
+
+# Expected daemon UID/GID. alsactl in rdaemon mode runs as root throughout
+# its lifetime; there is no internal privilege drop. A non-zero live UID
+# at verify time is drift.
+topic_alsa_state_expected_uid: 0
+topic_alsa_state_expected_gid: 0
+
+# Expected /proc/<MainPID>/comm value. The vendor ExecStart= directive
+# carries a leading dash prefix; the comm probe is the load-bearing
+# defeat of the dash-prefix exit-masking surface.
+topic_alsa_state_expected_comm: "alsactl"
+
+# Expected effective values surfaced from `systemctl show --value`.
+topic_alsa_state_expected_nnp: "yes"
+topic_alsa_state_expected_mdwe: "yes"
+topic_alsa_state_expected_protect_system: "full"
+topic_alsa_state_expected_syscall_architectures: "native"
+
+# CapabilityBoundingSet is dropped to the empty set. The verify script
+# normalises whitespace and lowercases before comparing against the empty
+# string; a non-empty observed value is drift.
+topic_alsa_state_expected_caps_normalized: ""
+
+# RestrictAddressFamilies expected in source order (matches the drop-in
+# source order; the property is order-preserving on output).
+topic_alsa_state_expected_raf_source_order:
+  - AF_UNIX
+  - AF_NETLINK
+
+# SystemCallFilter length-plus-anchor check parameters. The resolved
+# filter is multi-thousand-byte; 1500 is a conservative lower bound.
+# Anchor tokens are the @system-service expansion markers; the absence
+# of setgroups/setuid/capset anchors is intentional — alsa-state ships
+# no additive privilege-drop carve-out.
+topic_alsa_state_expected_scf_length_min: 1500
+topic_alsa_state_expected_scf_anchor_tokens:
+  - epoll_wait
+  - recvfrom
+
+# Saved-state file location. Verify smoketest asserts size > 0.
+topic_alsa_state_state_file: "/var/lib/alsa/asound.state"

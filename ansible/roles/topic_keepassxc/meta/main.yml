@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+galaxy_info:
+  role_name: topic_keepassxc
+  description: "KeePassXC user-application hardening: a custom staff-spawned sub-domain (keepassxc_t), a file_type-only data cut (keepassxc_db_t), and two companion type_transition modules (label durability across atomic save; helper-spawn domain containment). Three priority-400 CIL modules, four fcontext mappings, a four-target restorecon. No systemd unit, no drop-in, no /etc config."
+  license: "MIT"
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Fedora
+      versions:
+        - "44"
+        - "45"
+
+# The full four-Foundation set — the maximum dependency set in this tree.
+# Layer 0 (umask): the three CIL sources are materialized under /root/ with an
+# explicit 0644, against operator UMASK 0027. Layer 1 (sudo-roles): every
+# privileged step transits the staff_u -> sysadm_r -> sysadm_t role-switch.
+# Layer 2 (selinux-cil-bootstrap): the topic ships three CIL modules loaded at
+# priority 400. Layer 3 (audit-logging-baseline): the verify discipline reads
+# the AVC stream and asserts the enforced cut.
+dependencies:
+  - role: foundation_umask
+  - role: foundation_sudo_roles
+  - role: foundation_selinux_cil_bootstrap
+  - role: foundation_audit_logging_baseline

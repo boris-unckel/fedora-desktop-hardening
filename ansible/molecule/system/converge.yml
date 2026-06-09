@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# System-tier converge: apply the cumulative cloud-testable topic set on one
+# host, in bootstrap (P1 -> P2 -> P3) order. The boot-failure-class P1 topics
+# run first, matching the documented bootstrap order and the risk model in
+# livetest/topic-test-matrix.md. The foundation substrate is established by
+# prepare.yml; each topic role re-asserts the foundation idempotently through
+# its meta dependencies. Privileged tasks run in the role-switched sysadm_t
+# context, matching the operator administration model.
+#
+# Session-dependent topics (keepassxc, mozilla_firefox, mozilla_thunderbird,
+# flatpak_portal_cache) and the Wayland-session topic (staff_wayland_memfd) are
+# excluded: they require a live user session the headless system node does not
+# provide, and are handled by the phased session-effectiveness tier.
+- name: Converge — apply the cumulative cloud-testable topic set
+  hosts: all
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  vars:
+    foundation_sudo_roles_user: "{{ ansible_user }}"
+    # Each topic role self-verifies during apply, so the cumulative converge
+    # only carries topics whose verify.sh is green on a headless VM. Three
+    # otherwise-cloud-testable topics are held out as documented open items,
+    # not included here: topic_cups and topic_aide (each clean except an
+    # avc_clean count still being classified), and topic_gnupg_pinentry_dbus
+    # (applicability-gated on an operator pinentry selection the harness cannot
+    # supply in a readable context). Session and Wayland-session topics are
+    # excluded by design.
+    system_tier_topics:
+      # P1 — whole-host / boot-failure class, applied first.
+      - topic_kernel_hardening
+      - topic_dbus_broker
+      - topic_network_manager
+      - topic_auditd
+      - topic_plymouth
+      # P2 — service-level blast radius.
+      - topic_chronyd
+      - topic_cron
+      - topic_rngd
+      - topic_tuned
+      - topic_udisks2
+      - topic_avahi_daemon
+      - topic_alsa_state
+      - topic_smartd
+      - topic_thermald
+      # P3 — post-login / configuration-only.
+      - topic_flatpak_collection_id
+      - topic_python_pip_user_tree
+      - topic_switcheroo_control
+      - topic_flatpak_audio_sandbox
+      - topic_flatpak_oci_pull_dbus
+  tasks:
+    - name: "Apply topic role: {{ item }}"
+      ansible.builtin.include_role:
+        name: "{{ item }}"
+      loop: "{{ system_tier_topics }}"

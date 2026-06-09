@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for foundation_audit_logging_baseline. Block apply when
+# the host is the wrong family, when the audit unit is missing from the
+# systemd catalog, when the journald unit is missing, or when the Layer 1
+# escalation surface is unreachable.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      foundation_audit_logging_baseline targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | auditd.service unit file present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/auditd.service"
+  register: auditd_unit
+  failed_when: not (auditd_unit.stat.exists | default(false))
+
+- name: "preflight | systemd-journald.service unit file present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/systemd-journald.service"
+  register: journald_unit
+  failed_when: not (journald_unit.stat.exists | default(false))
+
+- name: "preflight | sysadm_t escalation is callable (auditctl -s)"
+  ansible.builtin.command:
+    argv:
+      - auditctl
+      - "-s"
+  register: sysadm_probe
+  changed_when: false
+  failed_when: sysadm_probe.rc != 0
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"

@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_switcheroo_control.
+#
+# This role ships no handlers. The modify stage runs a single
+# ansible.builtin.systemd_service task with enabled=false and
+# state=stopped; the module performs both the symlink removal and the
+# daemon stop in one systemd transaction, with no follow-up daemon-reload,
+# restart, or restorecon to fire. The file is present for skeleton
+# consistency.

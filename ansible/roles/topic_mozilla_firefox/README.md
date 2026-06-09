@@ -1,0 +1,52 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+# topic_mozilla_firefox
+
+## Purpose
+
+Topic role that installs Mozilla Firefox as a Flathub-installed system-wide Flatpak ref, writes a system-wide sandbox-override that scopes the application's filesystem and socket access down from its Flathub-manifest defaults (`filesystems=xdg-download;!host;!home;`, `sockets=wayland;!x11;`), seeds a VAAPI hardware-video-decoding `user_pref(...)` block into each declared per-profile `user.js`, and removes the canonical four-package Fedora Firefox RPM tree (`firefox`, `firefox-langpacks`, `mozilla-openh264`, `mozilla-filesystem`) plus any trailing orphans picked up by `dnf autoremove`. The role-switched mutating calls (`flatpak install --system`, `flatpak override --system`) transit `sudo -r sysadm_r -t sysadm_t`. The role ships **no** systemd unit, **no** systemd drop-in, **no** `/etc/profile.d/` script, **no** configuration file under `/etc/firefox/` or `/etc/mozilla/`, **no** polkit rule, **no** sudoers fragment, **no** desktop-entry override under `/usr/share/applications/`, **no** SELinux CIL module, **no** `semanage fcontext` mapping, **no** `restorecon` invocation, **no** file-label change, and **no** system-bus `systemctl restart`. The end-state portal-permission posture for the application is default `ask` (no entry in the Flatpak permission DB at `/var/lib/flatpak/db/org.freedesktop.impl.portal.access`); the role does not write a `flatpak permission-set` entry for the camera, microphone, or location surfaces. The full topic end-state and the verify discipline are documented in `docs/reference/topics/mozilla-firefox.md`.
+
+The role's preflight performs nine applicability checks: OS family (Fedora >= 44), required-package presence (`flatpak`, `ostree`), operator-mapping note (the role completes on `unconfined_u` with an informational note rather than aborting — the end-state behaves identically, only the surrounding hardening posture is owned by separate articles), Flathub remote presence (fail-fast on a missing remote), Flathub `collection-id=` binding presence (informational note naming the `flatpak-collection-id` sibling Topic on a missing binding; the install proceeds, only the update path silently skips), audio-sandbox SELinux allow-rule presence (`sesearch -A -s staff_t -t device_t -c dir -p mounton`; fail-fast on a missing rule with an error message naming the `flatpak-audio-sandbox` sibling Topic), SONAME-aware reverse-dependency probe against the four-package RPM removal set (per-package `rpm -ql | grep '\.so'` + `rpm -q --whatrequires '<libfoo.so.N>()(64bit)'`; fail-fast on a non-empty reverse-dependency list), and live-Firefox-process probes against both the host-side `/usr/(lib64|bin)/firefox/` pattern and the sandbox-side `org\.mozilla\.firefox` pattern (fail-fast on a non-empty result; the profile-seeding stage relies on no Firefox process holding the profile lock at apply time).
+
+## Variables
+
+| Name | Default | Purpose |
+|---|---|---|
+| `topic_mozilla_firefox_required_packages` | `[flatpak, ostree]` | Required-package preflight; fail-fast on a missing entry. |
+| `topic_mozilla_firefox_expected_seuser_substring` | `staff_u` | Operator runtime SELinux mapping anchor (informational; does not abort on mismatch). |
+| `topic_mozilla_firefox_flathub_remote_name` | `flathub` | The Flathub remote name on the system-wide Flatpak install. |
+| `topic_mozilla_firefox_application_id` | `org.mozilla.firefox` | The application ref ID. |
+| `topic_mozilla_firefox_branch` | `stable` | The Flathub branch to track (the role does not pin a specific point release). |
+| `topic_mozilla_firefox_rpm_removal_set` | `[firefox, firefox-langpacks, mozilla-openh264, mozilla-filesystem]` | Canonical four-package RPM removal set. |
+| `topic_mozilla_firefox_sandbox_override` | `{filesystems_deny: [host, home], filesystems_allow: [xdg-download], sockets_deny: [x11], sockets_allow: [wayland]}` | Sandbox-override structured mapping. Drives the byte-exact `flatpak override --system` invocation. |
+| `topic_mozilla_firefox_profiles` | `[]` | Operator-declared list of per-host Firefox profile directory names. Empty by default; no per-profile action runs unless populated. |
+| `topic_mozilla_firefox_external_snapshot_path` | `''` | Operator-side path to a host-side profile-tree archive (operator pre-deploy responsibility; documented but not consumed automatically by the rollback). |
+| `topic_mozilla_firefox_vaapi_user_js_block` | (two-line `user_pref(...)` block) | Byte-exact VAAPI preference seed written under a unique `blockinfile` marker into each per-profile `user.js`. |
+| `topic_mozilla_firefox_portal_permission_camera` | `ask` | Camera-surface portal-permission posture. The role only writes a `flatpak permission-set ... no` invocation when the operator overrides this to `'no'`. |
+| `topic_mozilla_firefox_portal_permission_microphone` | `ask` | Microphone-surface portal-permission posture (same opt-out semantics). |
+| `topic_mozilla_firefox_portal_permission_location` | `ask` | Location-surface portal-permission posture (same opt-out semantics). |
+| `topic_mozilla_firefox_repo_config_path` | `/var/lib/flatpak/repo/config` | The ostree-layer INI config file the preflight reads to assert the Flathub `collection-id=` binding. |
+
+## Dependencies
+
+- `foundation_sudo_roles` (Layer 1) — every privileged step transits the `staff_u -> sysadm_r -> sysadm_t` role-switch surface (the system-install, the sandbox-override write, the override-file content read in the probe and verify, and the role-switched `ausearch` against the AVC stream). Plain `sudo` from a `staff_u`-mapped login lands in `staff_sudo_t`, which lacks both the DAC capability against the UMASK-027-locked Flatpak system store and the SELinux write-transition the policy expects against the system-wide Flatpak store and the system-wide override directory.
+- `foundation_audit_logging_baseline` (Layer 3) — the verify discipline asserts boot-clean AVC posture against the application's process tree (`firefox`, `bwrap`, `flatpak.*org\.mozilla\.firefox` keyword set) using the four-tool diagnosis loop (`ausearch`, `audit2why`, `audit2allow`, `sealert`) documented at the Layer 3 surface.
+
+The role intentionally does not depend on the UMASK foundation (the role does not write a fresh file under operator UMASK influence in any place where a non-operator daemon would later need to read it; the override file is mutated in place by the `flatpak override --system` code path which preserves mode and owner by design, and the per-profile `user.js` is written under the operator's own UID where the bwrap-launched application reads it as the same UID) or the SELinux CIL bootstrap (no CIL module is shipped). The dependency set is deliberately narrower than the four-Foundation set used by other Flatpak topics.
+
+## Tags
+
+- `topic_mozilla_firefox` — all role tasks.
+- `preflight` — preflight checks only (OS family, required-package presence, operator-mapping note, Flathub remote presence, collection-id binding presence, audio-sandbox SELinux allow-rule presence, SONAME-aware reverse-dependency probe, live-Firefox-process probes).
+- `probe` — read-only probe (`files/probe.sh`).
+- `apply` — RPM removal, system-install, sandbox-override write, conditional portal-cache reset, optional profile-seeding, per-profile VAAPI block-write, MIME-default informational read.
+- `verify` — Soll/Ist verification (`files/verify.sh`).
+
+## Idempotence notes
+
+- The role is **idempotent** in the Ansible-`--check`-reports-zero-changes sense. The system-install task wraps `flatpak install -y --system flathub org.mozilla.firefox` in a `creates: /var/lib/flatpak/app/org.mozilla.firefox` style guard; on a host already carrying the application ref the install is a Flatpak-internal no-op and the task reports `changed=false`. On a re-run with a newer upstream point release available at the Flathub remote, the install promotes the host's deployed branch to the latest available point release; the `creates:` guard is conservative against the install-or-noop boundary.
+- The sandbox-override task wraps the `flatpak override --system` invocation in a `changed_when` predicate that re-reads `/var/lib/flatpak/overrides/org.mozilla.firefox` after the call and reports `changed=true` only if the file content was added or modified. The post-override portal-cache reset is gated on the registered fact `__topic_mozilla_firefox_override_changed`, set to `true` only if the override task reported `changed=true`. The reset is encoded as a regular task with a `when:` clause, **not** as a handler — handlers fire after the entire play and would defer the cache reset past the per-profile preference-seed loop.
+- The per-profile VAAPI block-write uses `ansible.builtin.blockinfile` with a unique marker (`// BEGIN/END ANSIBLE MANAGED BLOCK — topic_mozilla_firefox VAAPI`); on a host whose `user.js` already carries the block the block-edit is a no-op and the task reports `changed=false`. The profile-seeding stage is opt-in and runs only when `topic_mozilla_firefox_external_snapshot_path` is set and `topic_mozilla_firefox_profiles` is non-empty.
+- The four-package RPM removal and the trailing `dnf autoremove` are issued via `ansible.builtin.dnf` with `state: absent` and `autoremove: true`; on a host already in the end-state both calls are DNF-internal no-ops.
+- The `rescue:` block on the modify `block:` does **not** auto-rollback. The byte-exact rollback verb (the three-call sequence `flatpak override --system --reset`, `flatpak uninstall -y --system`, `dnf install -y` of the four-package set, plus operator-side restoration of the host-side profile tree from the operator's external snapshot if applicable) is the operator's deliberate decision and is documented in the Topic Reference under Recovery posture; an automatic rollback would be the wrong default.
+- Boot-failure risk is **structurally zero**: the application is a post-login user-application; a Flatpak-side or sandbox-side misconfiguration is reversible from `sysadm_t` without rebooting; the application's bwrap-launched process tree has no dependency on `init_t` and cannot block the boot path. The Recovery-Pointer banner in the Topic Reference is included for tree consistency.
+- On a correctly applied host, `--check` reports zero changes (every modify task reports `changed=false` and the conditional portal-cache reset is skipped on the `when:` clause). Stated as a claim, not a guarantee.

@@ -1,0 +1,146 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_udisks2
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying does not change state on a correctly
+# configured host; see README.md "Idempotence notes").
+#
+# Modify pushes three drop-in files under
+# /etc/systemd/system/udisks2.service.d/. A change to any of them notifies
+# the daemon-reload-and-restart handler chain. Live-state probe is
+# read-only and runs under the Layer-1 sysadm_r escalation.
+
+- name: "topic_udisks2 | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_udisks2
+    - preflight
+
+- name: "topic_udisks2 | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_udisks2
+    - probe
+
+- name: "topic_udisks2 | apply configuration"
+  block:
+
+    - name: "topic_udisks2 | drop-in directory present"
+      ansible.builtin.file:
+        path: "{{ topic_udisks2_dropin_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "topic_udisks2 | install 99-hardening.conf"
+      ansible.builtin.copy:
+        src: "99-hardening.conf"
+        dest: "{{ topic_udisks2_dropin_dir }}/99-hardening.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_udisks2 dropin changed"
+
+    - name: "topic_udisks2 | install 99-nnp.conf"
+      ansible.builtin.copy:
+        src: "99-nnp.conf"
+        dest: "{{ topic_udisks2_dropin_dir }}/99-nnp.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_udisks2 dropin changed"
+
+    - name: "topic_udisks2 | install 99-process-restrict.conf"
+      ansible.builtin.copy:
+        src: "99-process-restrict.conf"
+        dest: "{{ topic_udisks2_dropin_dir }}/99-process-restrict.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_udisks2 dropin changed"
+
+    - name: "topic_udisks2 | read live MainPID"
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - "show"
+          - "-p"
+          - "MainPID"
+          - "--value"
+          - "udisks2.service"
+      register: live_main_pid
+      changed_when: false
+
+    - name: "topic_udisks2 | read live SELinux domain"
+      ansible.builtin.shell: >
+        awk -F: '{print $3}' /proc/{{ live_main_pid.stdout | trim }}/attr/current
+      args:
+        executable: /bin/bash
+      register: live_domain
+      changed_when: false
+      failed_when: false
+      when: (live_main_pid.stdout | trim) not in ['', '0']
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_udisks2 | read AVC count since boot"
+      ansible.builtin.shell: >
+        ausearch -m AVC -ts boot
+        | grep -cE '(devicekit_disk_t|nnp_transition|udisksd)'
+        || true
+      args:
+        executable: /bin/bash
+      register: avc_count
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_udisks2 | report live state"
+      ansible.builtin.debug:
+        msg: >
+          udisks2 MainPID={{ live_main_pid.stdout | trim }},
+          SELinux domain={{ (live_domain.stdout | default('?')) | trim }},
+          AVC count since boot={{ (avc_count.stdout | default('0')) | trim }}.
+
+  rescue:
+
+    - name: "topic_udisks2 | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_udisks2 apply step failed. Auto-rollback is intentionally
+          not performed; rolling back the three drop-ins requires an
+          operator decision about which stage to revert (NNP only, NNP +
+          process-restrict, or all three). See the topic Reference under
+          "Verification" for the three-stage rollback sequence and the
+          recover-from-boot-failure how-to for the boot-failure variant.
+
+  tags:
+    - topic_udisks2
+    - apply
+
+- name: "topic_udisks2 | flush handlers before verify"
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - topic_udisks2
+    - apply
+
+- name: "topic_udisks2 | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_udisks2
+    - verify

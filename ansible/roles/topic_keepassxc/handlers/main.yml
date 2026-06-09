@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_keepassxc.
+#
+# Notification channels:
+#   "topic_keepassxc cil changed"   — fires on a change to any of the three
+#                                     CIL sources. Installs all three modules
+#                                     at priority 400 in one transaction under
+#                                     sysadm_r, so the companion modules'
+#                                     references to keepassxc_t / keepassxc_db_t
+#                                     / bin_t resolve at link time.
+#   "restorecon keepassxc binaries" — fires on a binary fcontext change.
+#   "restorecon keepassxc database" — fires on the database-regex fcontext
+#                                     change; recursive over the database dir.
+#
+# No daemon-reload, no service restart, no host reboot: the application is
+# user-launched per session, and the new runtime domain takes effect for new
+# processes via the entrypoint typetransition.
+
+- name: "topic_keepassxc | semodule install (extras + autotrans + spawn_isolation)"
+  ansible.builtin.command:
+    argv:
+      - semodule
+      - "-X"
+      - "{{ topic_keepassxc_cil_priority | string }}"
+      - "-i"
+      - "{{ topic_keepassxc_cil_source_dir }}/keepassxc_extras.cil"
+      - "{{ topic_keepassxc_cil_source_dir }}/keepassxc_dbtype_autotrans.cil"
+      - "{{ topic_keepassxc_cil_source_dir }}/keepassxc_spawn_isolation.cil"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_keepassxc cil changed"
+
+- name: "topic_keepassxc | restorecon binaries"
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-v"
+      - /usr/bin/keepassxc
+      - /usr/bin/keepassxc-cli
+      - /usr/bin/keepassxc-proxy
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "restorecon keepassxc binaries"
+
+- name: "topic_keepassxc | restorecon database directory"
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-Rv"
+      - "{{ topic_keepassxc_database_dir }}"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "restorecon keepassxc database"

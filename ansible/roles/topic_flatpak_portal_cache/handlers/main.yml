@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_flatpak_portal_cache.
+#
+# This role ships no handlers. The modify stage runs exactly one mutating
+# action — `systemctl --user restart xdg-document-portal.service` against
+# the operator's user-systemd instance — and the post-reset verify runs
+# inline as the next task in tasks/main.yml. There is no daemon-reload
+# (no system-side unit changes), no restorecon (no labels altered), no
+# system-bus restart (the system-bus dbus-broker is not affected), and no
+# CIL-module install. The file is present for skeleton consistency.

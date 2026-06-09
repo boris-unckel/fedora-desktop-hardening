@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[Unit]
+Description=AIDE file-integrity check (oneshot)
+Documentation=man:aide(1) man:aide.conf(5)
+ConditionPathExists=/var/lib/aide/aide.db.gz
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/aide --check
+Nice=19
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+galaxy_info:
+  role_name: topic_alsa_state
+  description: "alsa-state hardening (three drop-ins plus topic-owned CIL, empty CapabilityBoundingSet, paired comm probe defeating dash-prefix exit-masking)."
+  license: "MIT"
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Fedora
+      versions:
+        - "44"
+        - "45"
+
+dependencies:
+  - role: foundation_umask
+  - role: foundation_sudo_roles
+  - role: foundation_selinux_cil_bootstrap
+  - role: foundation_audit_logging_baseline

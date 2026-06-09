@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_tuned.
+#
+# One notification channel:
+#   "topic_tuned dropin changed" — fires on a change to the single
+#                                   drop-in file. Triggers restorecon,
+#                                   daemon-reload, and a unit restart.
+#
+# No semodule install handler. This topic ships no CIL module; the
+# Layer-2 CIL bootstrap surface is not exercised here.
+
+- name: "topic_tuned | restorecon tuned drop-in"
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-v"
+      - "{{ topic_tuned_dropin_dir }}/99-hardening.conf"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_tuned dropin changed"
+
+- name: "topic_tuned | daemon-reload"
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "topic_tuned dropin changed"
+
+- name: "topic_tuned | restart tuned"
+  ansible.builtin.systemd:
+    name: "tuned.service"
+    state: restarted
+  listen: "topic_tuned dropin changed"

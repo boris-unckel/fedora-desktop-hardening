@@ -1,0 +1,171 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_tuned. Block apply when the host family is
+# wrong, when the tuned vendor unit is missing, when the tuned package is
+# not installed, when matchpathcon /usr/bin/tuned does not return
+# tuned_exec_t (the canonical post-merge label is required so that the
+# init_t -> tuned_t type-transition fires at execve time), or when
+# matchpathcon on the drop-in path does not return systemd_unit_file_t.
+# Stock-unit directive recon and the pre-hardening Soll-state recon are
+# non-fatal reports stored as facts for post-deploy comparison.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_tuned targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | tuned.service vendor unit present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/tuned.service"
+  register: vendor_unit
+  failed_when: not (vendor_unit.stat.exists | default(false))
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_tuned_required_packages }}"
+
+- name: "preflight | tuned-adm tooling present"
+  ansible.builtin.command:
+    argv:
+      - command
+      - "-v"
+      - tuned-adm
+  register: tuned_adm_check
+  changed_when: false
+  failed_when: tuned_adm_check.rc != 0
+
+- name: "preflight | stock unit sparse-baseline recon"
+  ansible.builtin.shell: >
+    grep -E
+    '^(Type|ExecStart|EnvironmentFile|Condition|RuntimeDirectory|StateDirectory|ConfigurationDirectory|LogsDirectory|ProtectSystem|ProtectHome|ProtectKernel|ProtectControl|ProtectClock|ProtectHostname|ProtectProc|PrivateTmp|PrivateDevices|PrivateUsers|RestrictNamespaces|RestrictRealtime|RestrictSUIDSGID|RestrictAddressFamilies|LockPersonality|MemoryDenyWriteExecute|SystemCallFilter|SystemCallArchitectures|DeviceAllow|CapabilityBoundingSet|NoNewPrivileges|AmbientCapabilities|UMask|ProcSubset|User|Group|RefuseManualStop|RefuseManualStart|Restart|PIDFile|BusName)='
+    /usr/lib/systemd/system/tuned.service
+    || true
+  args:
+    executable: /bin/bash
+  register: stock_directive_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report stock unit directive recon"
+  ansible.builtin.debug:
+    msg: >
+      Stock tuned.service directives (non-fatal report; the topic assumes
+      a sparse vendor unit. A future package version that adds a sandbox
+      directive overlapping a topic-owned property may require manifest
+      revision before applying this role): {{ stock_directive_recon.stdout | trim }}.
+
+- name: "preflight | matchpathcon canonical binary path"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "{{ topic_tuned_binary_path_canonical }}"
+  register: matchpathcon_canonical
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | matchpathcon pre-merge binary path"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "{{ topic_tuned_binary_path_premerge }}"
+  register: matchpathcon_premerge
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast if canonical binary path does not resolve to tuned_exec_t"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon {{ topic_tuned_binary_path_canonical }} returned an
+      unexpected mapping: {{ matchpathcon_canonical.stdout | trim }}
+      Expected: {{ topic_tuned_expected_fcontext_canonical }}.
+      The canonical-side label is the one the init_t -> tuned_t type-
+      transition relies on at execve time; without it the daemon would
+      remain in init_t and the live-state probe would observe the wrong
+      domain. Review the F44 sbin/bin merge fcontext explanation and
+      restore the stock targeted-policy mapping before applying this role.
+  when:
+    - (matchpathcon_canonical.stdout | regex_search(topic_tuned_expected_fcontext_canonical)) is none
+
+- name: "preflight | report matchpathcon outcomes"
+  ansible.builtin.debug:
+    msg: >
+      matchpathcon {{ topic_tuned_binary_path_canonical }}:
+      {{ matchpathcon_canonical.stdout | trim }} ;
+      matchpathcon {{ topic_tuned_binary_path_premerge }}:
+      {{ matchpathcon_premerge.stdout | trim }}.
+
+- name: "preflight | matchpathcon drop-in path"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "{{ topic_tuned_dropin_dir }}/99-hardening.conf"
+  register: matchpathcon_dropin
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast if drop-in path does not resolve to systemd_unit_file_t"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon {{ topic_tuned_dropin_dir }}/99-hardening.conf returned
+      an unexpected mapping: {{ matchpathcon_dropin.stdout | trim }}
+      Expected: {{ topic_tuned_dropin_fcontext }}.
+      The drop-in must carry the generic systemd_unit_file_t label; the
+      stock targeted policy on Fedora 44 ships no service-specific subtype
+      for the tuned drop-in directory.
+  when:
+    - (matchpathcon_dropin.stdout | regex_search(topic_tuned_dropin_fcontext)) is none
+
+- name: "preflight | pre-hardening Soll-state recon"
+  ansible.builtin.shell: >
+    systemctl is-active tuned.service ;
+    systemctl show tuned.service -p MainPID --value ;
+    tuned-adm active 2>/dev/null
+    || true
+  args:
+    executable: /bin/bash
+  register: preflight_soll_state_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report pre-hardening Soll-state recon"
+  ansible.builtin.debug:
+    msg: >
+      Pre-deploy Soll-state snapshot (non-fatal capture; on a stock host
+      with tuned active, is-active returns 'active', MainPID is non-zero,
+      and tuned-adm active returns the operator-selected active profile
+      name). Snapshot: {{ preflight_soll_state_recon.stdout | trim }}.
+
+- name: "preflight | pre-hardening platform-side mismatch signature"
+  ansible.builtin.shell: >
+    journalctl -b 0 -u tuned.service --no-pager 2>/dev/null
+    | grep -iE 'verify: failed|EOPNOTSUPP|operation not supported'
+    | tail -20
+    || true
+  args:
+    executable: /bin/bash
+  register: preflight_mismatch_signature
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report pre-hardening platform-side mismatch signature"
+  ansible.builtin.debug:
+    msg: >
+      Pre-hardening platform-side mismatch signature (non-fatal capture;
+      lines here are the platform-side baseline that any post-deploy
+      tuned-adm verify investigation must distinguish from a topic-owned
+      regression — boundary stated in the topic Reference under
+      "Verify"). Capture: {{ preflight_mismatch_signature.stdout | trim }}.

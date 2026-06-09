@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_alsa_state.
+#
+# Two notification channels:
+#   "topic_alsa_state cil changed"    — fires on a change to the CIL
+#                                        source file. Triggers semodule
+#                                        install under sysadm_r.
+#   "topic_alsa_state dropin changed" — fires on a change to any of the
+#                                        three drop-in files. Triggers
+#                                        restorecon, daemon-reload, and
+#                                        a unit restart.
+
+- name: "topic_alsa_state | semodule install nnp_alsa"
+  ansible.builtin.command:
+    argv:
+      - semodule
+      - "-X"
+      - "{{ topic_alsa_state_cil_priority | string }}"
+      - "-i"
+      - "{{ topic_alsa_state_cil_dir }}/{{ topic_alsa_state_cil_module_name }}.cil"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_alsa_state cil changed"
+
+- name: "topic_alsa_state | restorecon alsa-state drop-ins"
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-v"
+      - "{{ topic_alsa_state_dropin_dir }}/99-hardening.conf"
+      - "{{ topic_alsa_state_dropin_dir }}/99-nnp.conf"
+      - "{{ topic_alsa_state_dropin_dir }}/99-process-restrict.conf"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_alsa_state dropin changed"
+
+- name: "topic_alsa_state | daemon-reload"
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "topic_alsa_state dropin changed"
+
+- name: "topic_alsa_state | restart alsa-state"
+  ansible.builtin.systemd:
+    name: "alsa-state.service"
+    state: restarted
+  listen: "topic_alsa_state dropin changed"

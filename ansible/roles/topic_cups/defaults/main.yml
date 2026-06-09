@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_cups. Override in group_vars or playbook.
+
+# Drop-in directory for cups.service.
+topic_cups_dropin_dir: "/etc/systemd/system/cups.service.d"
+
+# Priority-400 CIL publish directory.
+topic_cups_cil_dir: "/usr/local/share/selinux"
+
+# Required package: the daemon, the unit file, the runtime tmpfiles
+# configuration that creates /run/cups/ at boot, the configuration files
+# under /etc/cups/, the spool, log, and cache directory layouts, the
+# backends under /usr/lib/cups/backend/, the filters under
+# /usr/lib/cups/filter/, the CGI helpers under /usr/lib/cups/cgi-bin/,
+# the notifier helpers under /usr/lib/cups/notifier/, and the resolver/
+# queue-control helpers (lpinfo, lpstat).
+topic_cups_required_packages:
+  - cups
+
+# Topic-owned CIL module name and load priority.
+topic_cups_cil_module_name: "nnp_cups"
+topic_cups_cil_priority: 400
+
+# Expected effective values surfaced from `systemctl show --value`.
+topic_cups_expected_selinux_domain: "cupsd_t"
+topic_cups_expected_nnp: "yes"
+topic_cups_expected_protect_clock: "yes"
+topic_cups_expected_protect_kernel_logs: "yes"
+topic_cups_expected_protect_kernel_modules: "yes"
+topic_cups_expected_protect_control_groups: "yes"
+topic_cups_expected_syscall_architectures: "native"
+topic_cups_expected_mdwe: "yes"
+topic_cups_expected_restrict_namespaces: "yes"
+
+# Helper subdomains the CIL module covers under the inter-domain
+# nnp_transition class. The role deploys all four allow rules
+# unconditionally; the preflight pre-test report is informational.
+topic_cups_helper_subdomains:
+  - cupsd_lpd_t
+  - cupsd_config_t
+  - cups_pdf_t
+
+# Print smoketest tunable: IPP listen-port substring matched against
+# `ss -ltn 'sport = 631'` output.
+topic_cups_expected_listen_substrings:
+  - "127.0.0.1:631"
+  - "[::1]:631"

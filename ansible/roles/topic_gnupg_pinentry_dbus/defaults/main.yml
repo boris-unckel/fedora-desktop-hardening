@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_gnupg_pinentry_dbus. Override in group_vars or playbook.
+
+# Required packages on Fedora 44+. Preflight asserts presence; the role
+# fail-fasts on any missing entry. The topic is structurally inapplicable
+# without the GUI pinentry helper and the gcr-prompter D-Bus service.
+topic_gnupg_pinentry_dbus_required_packages:
+  - gnupg2
+  - pinentry
+  - pinentry-gnome3
+  - gcr3
+
+# Operator-configured pinentry helper; the role greps the operator's
+# ~/.gnupg/gpg-agent.conf for the pinentry-program line and aborts as a
+# clean no-op when the value is not the GUI helper. The topic does not
+# apply on pinentry-curses / -tty / -qt / -gtk2 backends.
+topic_gnupg_pinentry_dbus_expected_pinentry_program: "/usr/bin/pinentry-gnome3"
+
+# Operator-mapping applicability anchor. Plain unconfined_u logins do
+# not exercise the gap; the role aborts as a clean no-op on those hosts.
+topic_gnupg_pinentry_dbus_expected_seuser_substring: "staff_u"
+
+# CIL module identity. The priority-400 publish path is provisioned by
+# foundation_selinux_cil_bootstrap.
+topic_gnupg_pinentry_dbus_cil_module_name: "gnupg_pinentry_dbus"
+topic_gnupg_pinentry_dbus_cil_priority: 400
+topic_gnupg_pinentry_dbus_cil_source_path: "/root/gnupg_pinentry_dbus.cil"
+
+# The operator's gpg-agent.conf path. Override for non-default home.
+topic_gnupg_pinentry_dbus_user_gpg_agent_conf: "/home/{{ ansible_user_id }}/.gnupg/gpg-agent.conf"
+
+# Expected end-state values surfaced from the verify discipline.
+topic_gnupg_pinentry_dbus_expected_module_installed: "yes"
+topic_gnupg_pinentry_dbus_expected_rule_a_present: "yes"
+topic_gnupg_pinentry_dbus_expected_rule_b_noatsecure_present: "yes"
+topic_gnupg_pinentry_dbus_expected_rule_b_rlimitinh_present: "yes"
+topic_gnupg_pinentry_dbus_expected_rule_b_siginh_present: "yes"
+topic_gnupg_pinentry_dbus_expected_avc_class_a_since_boot: "0"

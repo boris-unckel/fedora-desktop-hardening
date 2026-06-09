@@ -1,0 +1,8 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+[externally-managed]
+Error=System Python on this host is dnf-managed.
+ Pip installs only:
+   - pip install --user <name>      (per-user tree)
+   - python3 -m venv .venv          (project-local venv)
+ Override --break-system-packages requires deliberate override.
+ Background: PEP 668, Fedora packaging convention.

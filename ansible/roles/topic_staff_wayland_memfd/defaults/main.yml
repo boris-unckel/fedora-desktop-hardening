@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_staff_wayland_memfd. Override in group_vars or playbook.
+
+# Compositor packages on Fedora 44+. Preflight asserts presence; the role
+# fail-fasts on a missing entry. The topic is structurally inapplicable
+# without the GNOME Wayland compositor that performs the read-write mmap
+# on the client shared-memory buffer.
+topic_staff_wayland_memfd_required_packages:
+  - gnome-shell
+  - mutter
+
+# Operator-mapping applicability anchor. Plain unconfined_u logins already
+# hold the equivalent tmpfs_t file surface; the role aborts as a clean
+# no-op on those hosts.
+topic_staff_wayland_memfd_expected_seuser_substring: "staff_u"
+
+# Session-type applicability hint (informational only). The gap is reached
+# on a Wayland session; an X11 session routes clients through Xwayland and
+# does not exercise the wl_shm memfd path. The role does not gate on this
+# value — the policy patch is harmless on a non-Wayland session.
+topic_staff_wayland_memfd_expected_session_type: "wayland"
+
+# CIL module identity. The priority-400 publish path is provisioned by
+# foundation_selinux_cil_bootstrap.
+topic_staff_wayland_memfd_cil_module_name: "staff_wayland_memfd"
+topic_staff_wayland_memfd_cil_priority: 400
+topic_staff_wayland_memfd_cil_source_path: "/root/staff_wayland_memfd.cil"
+topic_staff_wayland_memfd_cil_source_backup_path: "/root/staff_wayland_memfd.cil.pre-reinstall"
+
+# Expected end-state values surfaced from the verify discipline.
+topic_staff_wayland_memfd_expected_module_installed: "yes"
+topic_staff_wayland_memfd_expected_rule_write_present: "yes"
+topic_staff_wayland_memfd_expected_rule_map_present: "yes"
+topic_staff_wayland_memfd_expected_avc_class_since_boot: "0"

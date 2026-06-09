@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_thermald. Override in group_vars or playbook.
+
+# Drop-in directory for thermald.service.
+topic_thermald_dropin_dir: "/etc/systemd/system/thermald.service.d"
+
+# Required package: the daemon, the unit file, the dbus service activation
+# file, the system-bus policy file, and the sample operator config.
+topic_thermald_required_packages:
+  - thermald
+
+# Daemon binary path. Stock targeted policy on Fedora 44 ships no
+# service-specific subtype; matchpathcon is expected to resolve to the
+# generic bin_t label. A return of any *_exec_t value is preflight fail-
+# fast (manifest revision required to add a topic-owned CIL module and
+# the corresponding cross-link).
+topic_thermald_binary_path: "/usr/bin/thermald"
+topic_thermald_expected_fcontext: "bin_t"
+
+# Stock policy is expected to ship neither a thermald_t domain nor a
+# thermald_exec_t file context. A return of either type is preflight
+# fail-fast.
+topic_thermald_forbidden_policy_types:
+  - thermald_t
+  - thermald_exec_t
+
+# Expected SELinux runtime domain. thermald runs as init_t (identity
+# transition from PID 1 over a bin_t-labelled binary).
+topic_thermald_expected_runtime_domain: "init_t"
+
+# Expected daemon UID/GID. thermald performs no internal privilege drop.
+topic_thermald_expected_uid: 0
+topic_thermald_expected_gid: 0
+
+# Expected effective values surfaced from `systemctl show --value`.
+topic_thermald_expected_type: "dbus"
+topic_thermald_expected_result: "success"
+topic_thermald_expected_nnp: "yes"
+topic_thermald_expected_mdwe: "yes"
+topic_thermald_expected_protect_system: "full"
+topic_thermald_expected_syscall_architectures: "native"
+
+# CapabilityBoundingSet is dropped to the empty set. The verify script
+# normalises whitespace and lowercases before comparing against the empty
+# string; a non-empty observed value is drift.
+topic_thermald_expected_caps_normalized: ""
+
+# RestrictAddressFamilies expected in source order (matches the drop-in
+# source order; the property is order-preserving on output).
+topic_thermald_expected_raf_source_order:
+  - AF_UNIX
+  - AF_NETLINK
+
+# SystemCallFilter length-plus-anchor check parameters. The resolved
+# filter is multi-thousand-byte; 1500 is a conservative lower bound.
+# Anchor tokens are the @system-service expansion markers; the absence
+# of setgroups/setuid/capset anchors is intentional — thermald ships no
+# additive privilege-drop carve-out.
+topic_thermald_expected_scf_length_min: 1500
+topic_thermald_expected_scf_anchor_tokens:
+  - epoll_wait
+  - recvfrom
+
+# DPTF-less Soll-state journal anchor. The binary's signature exit reason
+# on hosts whose CPU exposes no Dynamic Platform and Thermal Framework
+# table.
+topic_thermald_dptf_less_journal_anchor: "Unsupported cpu model|Unsupported platform"

@@ -1,0 +1,134 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_thermald. Block apply when the host family
+# is wrong, when the thermald vendor unit is missing, when the thermald
+# package is not installed, when matchpathcon /usr/bin/thermald returns
+# anything other than bin_t (stock policy may have gained a service-
+# specific subtype; manifest revision required), or when seinfo --type
+# lists thermald_t or thermald_exec_t (same root cause). Stock-unit
+# directive recon and the platform-conditional Soll-state recon are
+# non-fatal reports stored as facts for post-deploy comparison.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_thermald targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | thermald.service vendor unit present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/thermald.service"
+  register: vendor_unit
+  failed_when: not (vendor_unit.stat.exists | default(false))
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_thermald_required_packages }}"
+
+- name: "preflight | stock unit sparse-baseline recon"
+  ansible.builtin.shell: >
+    grep -E
+    '^(Type|ExecStart|EnvironmentFile|Condition|RuntimeDirectory|StateDirectory|ConfigurationDirectory|LogsDirectory|ProtectSystem|SystemCallFilter|MemoryDenyWriteExecute|RestrictNamespaces|RestrictAddressFamilies|DeviceAllow|User|Group)='
+    /usr/lib/systemd/system/thermald.service
+    || true
+  args:
+    executable: /bin/bash
+  register: stock_directive_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report stock unit directive recon"
+  ansible.builtin.debug:
+    msg: >
+      Stock thermald.service directives (non-fatal report; the topic
+      assumes a sparse vendor unit. A future package version that adds
+      a sandbox directive may require manifest revision before applying
+      this role): {{ stock_directive_recon.stdout | trim }}.
+
+- name: "preflight | matchpathcon {{ topic_thermald_binary_path }}"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "{{ topic_thermald_binary_path }}"
+  register: matchpathcon_check
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast if matchpathcon returns anything other than bin_t"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon {{ topic_thermald_binary_path }} returned an unexpected
+      mapping: {{ matchpathcon_check.stdout | trim }}
+      Expected: {{ topic_thermald_expected_fcontext }}.
+      Stock policy may have gained a service-specific subtype for thermald.
+      The manifest needs revision to add a topic-owned CIL module and an
+      nnp-selinux-transition-trap cross-link in the topic Reference,
+      analogous to the sibling hardware-class topics. Open a fresh topic
+      session against an extended manifest before applying this role.
+  when:
+    - (matchpathcon_check.stdout | regex_search(topic_thermald_expected_fcontext)) is none
+
+- name: "preflight | report matchpathcon outcome"
+  ansible.builtin.debug:
+    msg: >
+      matchpathcon {{ topic_thermald_binary_path }}:
+      {{ matchpathcon_check.stdout | trim }}.
+
+- name: "preflight | stock policy domain absence check"
+  ansible.builtin.shell: >
+    seinfo --type 2>/dev/null
+    | grep -wE '{{ topic_thermald_forbidden_policy_types | join("|") }}'
+    || true
+  args:
+    executable: /bin/bash
+  register: stock_policy_check
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast if a thermald-related policy type appears"
+  ansible.builtin.fail:
+    msg: |
+      seinfo --type listed a thermald-related type:
+      {{ stock_policy_check.stdout | trim }}
+      Stock policy on Fedora 44 is expected to ship neither thermald_t
+      nor thermald_exec_t. The manifest needs revision (same rule as the
+      matchpathcon fail-fast above).
+  when:
+    - (stock_policy_check.stdout | trim) | length > 0
+
+- name: "preflight | report stock policy domain absence"
+  ansible.builtin.debug:
+    msg: >
+      Stock policy domain absence check: clean (no thermald-related
+      types present in the running policy — Soll on Fedora 44).
+
+- name: "preflight | platform-conditional Soll-state recon"
+  ansible.builtin.shell: >
+    systemctl show -p ActiveState,SubState,Result,MainPID --value thermald.service
+    && journalctl -u thermald.service --since '-1 hour' --no-pager
+    || true
+  args:
+    executable: /bin/bash
+  register: preflight_soll_state_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report platform-conditional Soll-state recon"
+  ansible.builtin.debug:
+    msg: >
+      Pre-deploy Soll-state snapshot (non-fatal capture; either DPTF-
+      bearing host with active/running or DPTF-less host with
+      inactive/dead and an "Unsupported cpu model" journal anchor is a
+      valid Soll). Snapshot:
+      {{ preflight_soll_state_recon.stdout | trim }}.

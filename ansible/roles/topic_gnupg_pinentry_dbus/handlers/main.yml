@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_gnupg_pinentry_dbus.
+#
+# This role ships no handlers. The modify stage runs an ansible.builtin.copy
+# of the CIL source under /root/ followed by a creates-guarded
+# `semodule -X 400 -i` invocation; SELinux access checks evaluate the
+# loaded policy on each system call, so a running gpg-agent picks up the
+# new allow rules without restart and no daemon-reload, restorecon, or
+# service restart needs to fire. The file is present for skeleton
+# consistency.

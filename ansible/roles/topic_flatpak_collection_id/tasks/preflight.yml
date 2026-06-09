@@ -1,0 +1,160 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_flatpak_collection_id. The role applies on
+# Fedora 44+ desktops with a system-wide Flatpak install whose remote
+# inventory contains at least one ostree-typed remote configured in the
+# role's binding mapping. The role completes (and does not abort) on a
+# host whose remote inventory contains only OCI-typed remotes, on a host
+# whose only Flatpak install is per-user, and on a host whose targeted
+# remotes already carry the configured binding.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_flatpak_collection_id targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }}
+      {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | required packages present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_flatpak_collection_id_required_packages }}"
+
+- name: "preflight | system-wide Flatpak store presence"
+  ansible.builtin.stat:
+    path: "/var/lib/flatpak/repo"
+  register: flatpak_system_store
+
+- name: "preflight | abort if system-wide Flatpak store is absent"
+  ansible.builtin.fail:
+    msg: |
+      flatpak-collection-id: /var/lib/flatpak/repo/ does not exist; this
+      Topic does not apply to hosts whose only Flatpak install is per-user
+      (~/.local/share/flatpak/). The per-user store can exhibit the same
+      collection-id initialization gap, but the surrounding hardening
+      posture (DAC ownership of the per-user store, the absence of a
+      role-switch escalation, the per-user ostree config direct path) is
+      owned by separate articles. Re-invoke on a host with a system-wide
+      Flatpak install, or extend the role for the per-user surface in a
+      separate session.
+  when:
+    - not flatpak_system_store.stat.exists
+
+- name: "preflight | operator runtime SELinux mapping"
+  ansible.builtin.command:
+    argv:
+      - id
+      - "-Z"
+  register: id_z_result
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | operator-mapping applicability note"
+  ansible.builtin.debug:
+    msg: |
+      flatpak-collection-id: operator runtime SELinux mapping does not
+      contain the canonical anchor
+      ('{{ topic_flatpak_collection_id_expected_seuser_substring }}').
+      Detected: '{{ id_z_result.stdout | trim }}'.
+      The configuration-state repair behaves identically on this host, but
+      this Topic's framing assumes a staff_u-mapped login; an unconfined_u
+      operator's surrounding hardening posture is owned by separate
+      articles. The role completes; it does not abort on this branch.
+  when:
+    - topic_flatpak_collection_id_expected_seuser_substring
+        not in (id_z_result.stdout | default(''))
+
+- name: "preflight | enumerate flatpak remote inventory"
+  ansible.builtin.command:
+    argv:
+      - flatpak
+      - remotes
+      - "--columns=name,url,collection"
+  register: flatpak_remotes_result
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report flatpak remote inventory"
+  ansible.builtin.debug:
+    msg: |
+      flatpak-collection-id: configured Flatpak remotes (name, url,
+      collection):
+      {{ flatpak_remotes_result.stdout | default('(empty)') | trim }}
+
+- name: "preflight | pre-modify config-file read (sysadm_t)"
+  ansible.builtin.command:
+    argv:
+      - grep
+      - "-E"
+      - '^\[remote |^collection-id='
+      - "{{ topic_flatpak_collection_id_repo_config_path }}"
+  register: pre_modify_config
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report pre-modify config-file content"
+  ansible.builtin.debug:
+    msg: |
+      Pre-modify per-remote config sections in
+      {{ topic_flatpak_collection_id_repo_config_path }}:
+      {{ pre_modify_config.stdout | default('(no matches)') | trim }}
+
+- name: "preflight | pre-modify dry-run line-count (sysadm_t)"
+  ansible.builtin.shell: >
+    flatpak update --noninteractive --no-deploy 2>&1
+    | grep -c 'Treating remote fetch error as non-fatal'
+    || true
+  register: pre_modify_warning_count
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report pre-modify diagnostic line-count"
+  ansible.builtin.debug:
+    msg: |
+      Pre-modify dry-run non-fatal-fetch-warning count:
+      {{ pre_modify_warning_count.stdout | default('0') | trim }}
+      A high value (typically ten or more on a hardened desktop) combined
+      with a zero update count is the load-bearing fingerprint of the
+      collection-id binding gap addressed by this Topic.
+
+- name: "preflight | identify ostree-typed remotes from the role's mapping"
+  ansible.builtin.set_fact:
+    __topic_flatpak_collection_id_targets: >-
+      {{
+        topic_flatpak_collection_id_remote_bindings
+        | dict2items
+        | selectattr('key', 'in',
+            (flatpak_remotes_result.stdout_lines | default([]))
+            | map('regex_replace', '^([^\\s]+).*$', '\\1') | list)
+        | rejectattr('key', 'in',
+            (flatpak_remotes_result.stdout_lines | default([]))
+            | select('search', topic_flatpak_collection_id_oci_url_prefix)
+            | map('regex_replace', '^([^\\s]+).*$', '\\1') | list)
+        | list
+      }}
+
+- name: "preflight | report ostree-typed remotes targeted by this run"
+  ansible.builtin.debug:
+    msg: |
+      flatpak-collection-id: ostree-typed remotes from the role's
+      binding mapping that are configured on this host:
+      {% for entry in __topic_flatpak_collection_id_targets %}
+        {{ entry.key }}: {{ entry.value }}
+      {% else %}
+        (none — the host has no ostree-typed remotes from the role's
+        mapping configured; the modify loop will be a no-op)
+      {% endfor %}

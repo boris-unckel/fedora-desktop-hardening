@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+galaxy_info:
+  role_name: topic_switcheroo_control
+  description: "switcheroo-control service-disable on hosts without hybrid graphics (no drop-in, no CIL, applicability gate via PCI display-plus-3D-controller count)."
+  license: "MIT"
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Fedora
+      versions:
+        - "44"
+        - "45"
+
+# Note: foundation_umask and foundation_selinux_cil_bootstrap are
+# intentionally absent. This topic writes no configuration files under
+# /etc/ and ships no CIL module; the operator UMASK 0027 mode-reflex has
+# nothing to apply against and the priority-400 publish path is not
+# invoked. The dependency set is intentionally smaller than every other
+# Topic-tier role in this tree.
+dependencies:
+  - role: foundation_sudo_roles
+  - role: foundation_audit_logging_baseline

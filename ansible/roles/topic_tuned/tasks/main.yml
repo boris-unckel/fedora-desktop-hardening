@@ -1,0 +1,161 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_tuned
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying does not change state on a correctly
+# configured host; see README.md "Idempotence notes").
+#
+# Modify ordering invariant:
+#   1. Push the single drop-in INI file.
+#   2. restorecon on the drop-in file (handler).
+#   3. Daemon-reload + restart (handlers).
+# A change to the drop-in notifies the handler chain.
+# Live-state probe is read-only.
+#
+# No semodule install handler. This topic ships no CIL module; the
+# Layer-2 CIL bootstrap surface is not exercised here. There is also no
+# meta: flush_handlers synchronisation between a CIL load and the drop-
+# in push, because there is no CIL load.
+#
+# The role MUST NOT prompt the operator for a reboot. The unit ships no
+# RefuseManualStop= directive; restart is the apply trigger for runtime
+# activation of the drop-in.
+
+- name: "topic_tuned | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_tuned
+    - preflight
+
+- name: "topic_tuned | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_tuned
+    - probe
+
+- name: "topic_tuned | apply configuration"
+  block:
+
+    - name: "topic_tuned | drop-in directory present"
+      ansible.builtin.file:
+        path: "{{ topic_tuned_dropin_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "topic_tuned | install 99-hardening.conf"
+      ansible.builtin.copy:
+        src: "99-hardening.conf"
+        dest: "{{ topic_tuned_dropin_dir }}/99-hardening.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_tuned dropin changed"
+
+    - name: "topic_tuned | read live MainPID"
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - "show"
+          - "-p"
+          - "MainPID"
+          - "--value"
+          - "tuned.service"
+      register: live_main_pid
+      changed_when: false
+
+    - name: "topic_tuned | read live SELinux domain"
+      ansible.builtin.shell: >
+        awk -F: '{print $3}' /proc/{{ live_main_pid.stdout | trim }}/attr/current
+      args:
+        executable: /bin/bash
+      register: live_domain
+      changed_when: false
+      failed_when: false
+      when: (live_main_pid.stdout | trim) not in ['', '0']
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_tuned | read live tuned-adm active"
+      ansible.builtin.command:
+        argv:
+          - tuned-adm
+          - active
+      register: live_active_profile
+      changed_when: false
+      failed_when: false
+
+    - name: "topic_tuned | read AVC count since boot"
+      ansible.builtin.shell: >
+        ausearch -m AVC -ts boot
+        | grep -cE '{{ topic_tuned_avc_filter }}'
+        || true
+      args:
+        executable: /bin/bash
+      register: avc_count
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_tuned | read SECCOMP count since boot"
+      ansible.builtin.shell: >
+        ausearch -m seccomp -ts boot
+        | grep -c '{{ topic_tuned_seccomp_filter }}'
+        || true
+      args:
+        executable: /bin/bash
+      register: seccomp_count
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_tuned | report live state"
+      ansible.builtin.debug:
+        msg: >
+          tuned MainPID={{ live_main_pid.stdout | trim }},
+          SELinux domain={{ (live_domain.stdout | default('SKIP — service inactive')) | trim }},
+          tuned-adm active rc={{ live_active_profile.rc | default(-1) }} stdout={{ (live_active_profile.stdout | default('')) | trim }},
+          AVC count since boot={{ (avc_count.stdout | default('0')) | trim }},
+          SECCOMP count since boot={{ (seccomp_count.stdout | default('0')) | trim }}.
+
+  rescue:
+
+    - name: "topic_tuned | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_tuned apply step failed. Auto-rollback is intentionally
+          not performed; rolling back the drop-in requires an operator
+          decision about which stage to revert (Stage 1: shrink to the
+          eleven-directive subset by setting both opt-outs to 'yes';
+          Stage 2: remove the drop-in entirely). See the topic Reference
+          under "Verification" for the two-stage rollback sequence and
+          the recover-from-boot-failure how-to for the boot-failure
+          variant.
+
+  tags:
+    - topic_tuned
+    - apply
+
+- name: "topic_tuned | flush handlers before verify"
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - topic_tuned
+    - apply
+
+- name: "topic_tuned | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_tuned
+    - verify

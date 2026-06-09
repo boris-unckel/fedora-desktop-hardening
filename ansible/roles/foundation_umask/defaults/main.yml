@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for foundation_umask. Override in group_vars or playbook.
+
+# Octal UMASK value written to /etc/login.defs.
+foundation_umask_value: "027"
+
+# Expected HOME_MODE in /etc/login.defs. Verified, not enforced — the Fedora
+# package default already matches.
+foundation_umask_home_mode: "0700"
+
+# Path to login.defs. Overridable for tests.
+foundation_umask_login_defs_path: "/etc/login.defs"

@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_thermald.
+#
+# One notification channel:
+#   "topic_thermald dropin changed" — fires on a change to any of the
+#                                      three drop-in files. Triggers
+#                                      restorecon, daemon-reload, and
+#                                      a unit restart.
+#
+# No semodule install handler. This topic ships no CIL module; the
+# Layer-2 CIL bootstrap surface is not exercised here.
+
+- name: "topic_thermald | restorecon thermald drop-ins"
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-v"
+      - "{{ topic_thermald_dropin_dir }}/99-hardening.conf"
+      - "{{ topic_thermald_dropin_dir }}/99-nnp.conf"
+      - "{{ topic_thermald_dropin_dir }}/99-process-restrict.conf"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_thermald dropin changed"
+
+- name: "topic_thermald | daemon-reload"
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "topic_thermald dropin changed"
+
+- name: "topic_thermald | restart thermald"
+  ansible.builtin.systemd:
+    name: "thermald.service"
+    state: restarted
+  listen: "topic_thermald dropin changed"

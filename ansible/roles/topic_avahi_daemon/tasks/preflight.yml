@@ -1,0 +1,157 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_avahi_daemon. Block apply when the host
+# family is wrong, when the avahi-daemon vendor unit is missing, when the
+# avahi package is not installed, or when matchpathcon for the daemon
+# binary at /usr/bin/avahi-daemon does not return avahi_exec_t. The
+# stock-policy nnp_transition pre-test, the F44 stock-unit near-empty
+# directive recon, and the pre-deploy mDNS baseline are captured as
+# non-fatal reports.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_avahi_daemon targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | avahi-daemon.service vendor unit present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/avahi-daemon.service"
+  register: vendor_unit
+  failed_when: not (vendor_unit.stat.exists | default(false))
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_avahi_daemon_required_packages }}"
+
+- name: "preflight | F44 stock-unit near-empty directive recon"
+  ansible.builtin.shell: >
+    grep -E
+    '^(RuntimeDirectory|StateDirectory|ConfigurationDirectory|LogsDirectory|ProtectSystem|ProtectHome|ProtectKernel|ProtectControl|ProtectClock|ProtectHostname|ProtectProc|PrivateTmp|PrivateDevices|PrivateUsers|RestrictNamespaces|RestrictRealtime|RestrictSUIDSGID|RestrictAddressFamilies|LockPersonality|MemoryDenyWriteExecute|SystemCallFilter|SystemCallArchitectures|DeviceAllow|CapabilityBoundingSet|NoNewPrivileges|AmbientCapabilities|UMask|ProcSubset|User|Group|Type|ExecStart|ExecReload|BusName|Sockets|NotifyAccess)='
+    /usr/lib/systemd/system/avahi-daemon.service
+    || true
+  args:
+    executable: /bin/bash
+  register: stock_directive_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report stock unit directive recon"
+  ansible.builtin.debug:
+    msg: >
+      Stock avahi-daemon.service near-empty baseline directives (non-fatal
+      report; a future package version that adds a directive overlapping a
+      topic-owned directive requires manifest revision before applying
+      this role): {{ stock_directive_recon.stdout | trim }}.
+
+- name: "preflight | matchpathcon for /usr/bin/avahi-daemon"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "/usr/bin/avahi-daemon"
+  register: matchpathcon_check
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast if matchpathcon does not return avahi_exec_t"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon /usr/bin/avahi-daemon returned a non-avahi_exec_t mapping:
+      {{ matchpathcon_check.stdout | trim }}
+      The stock fcontext for the daemon binary has been displaced. The
+      manifest needs revision before applying this role. Open a fresh
+      topic session against an extended manifest.
+  when: (matchpathcon_check.stdout | regex_search('avahi_exec_t')) is none
+
+- name: "preflight | report matchpathcon outcome"
+  ansible.builtin.debug:
+    msg: >
+      matchpathcon /usr/bin/avahi-daemon: {{ matchpathcon_check.stdout | trim }}.
+
+- name: "preflight | SELinux nnp_transition pre-test (expected empty)"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "init_t"
+      - "-t"
+      - "{{ topic_avahi_daemon_expected_selinux_domain }}"
+      - "-c"
+      - "process2"
+      - "-p"
+      - "nnp_transition"
+  register: nnp_check
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report SELinux nnp_transition pre-test outcome"
+  ansible.builtin.debug:
+    msg: >
+      SELinux nnp_transition pre-test for
+      init_t -> {{ topic_avahi_daemon_expected_selinux_domain }}:
+      {{ 'EMPTY (expected; topic CIL is required and will be installed)'
+         if (nnp_check.stdout | trim) == '' else
+         'NON-EMPTY (the rule is already in policy; topic CIL install at '
+         + 'priority 400 is idempotent and overlays without harm)' }}.
+
+- name: "preflight | mDNS baseline | unit active"
+  ansible.builtin.shell: >
+    systemctl is-active avahi-daemon.service || true
+  args:
+    executable: /bin/bash
+  register: preflight_unit_active
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | mDNS baseline | multicast-join count"
+  ansible.builtin.shell: >
+    journalctl -u avahi-daemon -b 0 --no-pager
+    | grep -cF "Joining mDNS multicast group" || true
+  args:
+    executable: /bin/bash
+  register: preflight_join_count
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | mDNS baseline | unit error stream tail"
+  ansible.builtin.shell: >
+    journalctl -b 0 -p err -u avahi-daemon --no-pager | tail -20 || true
+  args:
+    executable: /bin/bash
+  register: preflight_err_tail
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | mDNS baseline | resolution roundtrip"
+  ansible.builtin.shell: >
+    avahi-resolve-host-name "$(hostname).local" || true
+  args:
+    executable: /bin/bash
+  register: preflight_resolve
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report mDNS baseline"
+  ansible.builtin.debug:
+    msg: >
+      Pre-deploy mDNS baseline (non-fatal report; a non-empty error stream
+      signals a pre-existing avahi issue that the operator should
+      investigate before deploying this role): unit-active={{ preflight_unit_active.stdout | trim }};
+      multicast-join-count={{ preflight_join_count.stdout | trim }};
+      err-journal-tail-bytes={{ (preflight_err_tail.stdout | default('') | length) }};
+      resolve-rc={{ preflight_resolve.rc }};
+      resolve-stdout-bytes={{ (preflight_resolve.stdout | default('') | length) }}.

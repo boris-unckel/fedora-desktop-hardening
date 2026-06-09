@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_flatpak_oci_pull_dbus. Override in group_vars or playbook.
+
+# Required packages on Fedora 44+. Preflight asserts presence; the role
+# fail-fasts on a missing entry. The topic is structurally inapplicable
+# without the flatpak CLI and its OCI authenticator D-Bus service.
+topic_flatpak_oci_pull_dbus_required_packages:
+  - flatpak
+
+# Operator-mapping applicability anchor. Plain unconfined_u logins do
+# not exercise the gap; the role aborts as a clean no-op on those hosts.
+topic_flatpak_oci_pull_dbus_expected_seuser_substring: "staff_u"
+
+# CIL module identity. The priority-400 publish path is provisioned by
+# foundation_selinux_cil_bootstrap.
+topic_flatpak_oci_pull_dbus_cil_module_name: "flatpak_oci_pull_dbus"
+topic_flatpak_oci_pull_dbus_cil_priority: 400
+topic_flatpak_oci_pull_dbus_cil_source_path: "/root/flatpak_oci_pull_dbus.cil"
+
+# URL-prefix substring used by preflight to count OCI-typed remotes.
+# Tunable for a future remote-format change.
+topic_flatpak_oci_pull_dbus_oci_remote_url_prefix: "oci+"
+
+# Expected end-state values surfaced from the verify discipline.
+topic_flatpak_oci_pull_dbus_expected_module_installed: "yes"
+topic_flatpak_oci_pull_dbus_expected_rule_present: "yes"
+topic_flatpak_oci_pull_dbus_expected_avc_class_since_boot: "0"

@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for foundation_selinux_cil_bootstrap. Block apply when
+# the host is the wrong family, when the SELinux runtime is disabled,
+# when the policy tooling is missing, or when the Layer 1 dependency has
+# not been applied.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      foundation_selinux_cil_bootstrap targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | required SELinux tooling packages present"
+  ansible.builtin.package_facts:
+    manager: rpm
+
+- name: "preflight | tooling packages installed"
+  ansible.builtin.assert:
+    that:
+      - "'policycoreutils-python-utils' in ansible_facts.packages"
+      - "'selinux-policy-targeted' in ansible_facts.packages"
+    fail_msg: >
+      Required packages missing. Install with:
+        dnf install policycoreutils-python-utils selinux-policy-targeted
+
+- name: "preflight | read live SELinux runtime mode (getenforce)"
+  ansible.builtin.command:
+    argv:
+      - getenforce
+  register: getenforce_result
+  changed_when: false
+
+- name: "preflight | runtime mode is not disabled"
+  ansible.builtin.assert:
+    that:
+      - getenforce_result.stdout | trim | lower != 'disabled'
+    fail_msg: >
+      SELinux runtime is disabled. Recovery from disabled requires a
+      kernel-time toggle and a reboot, which is out of this role's scope.
+      Re-enable in /etc/selinux/config and reboot before re-applying.
+
+- name: "preflight | Layer 1 dependency artifact present"
+  ansible.builtin.stat:
+    path: "/usr/local/share/selinux/staff_extras.cil"
+  register: layer1_artifact
+  failed_when: not (layer1_artifact.stat.exists | default(false))
+
+- name: "preflight | sysadm_t escalation is callable"
+  ansible.builtin.command:
+    argv:
+      - semodule
+      - "-lfull"
+  register: sysadm_probe
+  changed_when: false
+  failed_when: sysadm_probe.rc != 0
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"

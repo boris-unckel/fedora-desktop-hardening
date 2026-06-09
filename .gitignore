@@ -1,0 +1,92 @@
+# ---- Linux ----
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ---- macOS ----
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ---- Windows ----
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ---- vim / editor backups ----
+*.swp
+*.swo
+*.swn
+*.swm
+*.un~
+.netrwhist
+Session.vim
+.viminfo
+*.bak
+*.orig
+*.rej
+
+# ---- Claude Code lokal ----
+.claude/settings.local.json
+.claude/projects/
+.claude/todos/
+.claude/shell-snapshots/
+.claude/statsig/
+.claude/ide/
+.claude/.credentials.json
+
+# ---- Security / Secrets (NIEMALS einchecken) ----
+# Environment-Files
+.env
+.env.*
+!.env.example
+*.env
+# Private Keys / Zertifikate
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+*.csr
+*.der
+*.jks
+*.keystore
+id_rsa
+id_rsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
+*.ppk
+# GPG / SSH / Passwords
+*.gpg
+*.asc
+.gnupg/
+.ssh/
+secrets/
+secret*
+*credentials*
+*password*
+*passwd*
+*token*
+.netrc
+.pgpass
+# Sudoers-Stage mit eingebettetem Secret (falls jemals)
+*.sudoers.local
+# Browser-/Auth-Token-Caches (falls dump je in Repo landen sollte)
+cookies.txt
+*.cookies
+auth.json
+
+# ---- Audit-Wrapper Laufzeit-Output ----
+*.tmp
+*.log.lock
+

@@ -1,0 +1,182 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_staff_wayland_memfd
+# Pattern: Preflight -> Modify (single CIL push) -> Verify
+# Idempotent: yes (re-applying does not change state on a host already
+# in the end-state; ansible.builtin.copy converges on byte-for-byte
+# content match and the semodule install task is creates-guarded). See
+# README.md "Idempotence notes".
+#
+# Modify ordering invariant:
+#   1. Preflight (OS family, compositor-package presence, operator-mapping
+#      applicability gate, session-type informational note, pre-load
+#      sesearch on both permissions, pre-hardening sanity baseline).
+#   2. Re-install audit anchor: when an existing module slot is found
+#      under /var/lib/selinux/targeted/active/modules/400/, copy the
+#      currently installed CIL source to
+#      /root/staff_wayland_memfd.cil.pre-reinstall before any new content
+#      is written.
+#   3. Copy CIL source to /root/staff_wayland_memfd.cil with explicit
+#      0644 root:root (operator UMASK 0027 reflex).
+#   4. semodule -X 400 -i, creates-guarded against the priority-400
+#      module slot under /var/lib/selinux/targeted/active/modules/.
+#   5. Post-load sesearch on both permissions asserts the full access
+#      vector is now present in the loaded policy.
+#
+# No drop-in push step. No semanage fcontext. No restorecon. No
+# setsebool. No systemctl daemon-reload. No service restart. No session
+# restart triggered from inside the role.
+
+- name: "topic_staff_wayland_memfd | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_staff_wayland_memfd
+    - preflight
+
+- name: "topic_staff_wayland_memfd | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_staff_wayland_memfd
+    - probe
+
+- name: "topic_staff_wayland_memfd | apply configuration"
+  block:
+
+    - name: "topic_staff_wayland_memfd | check existing module slot"
+      ansible.builtin.stat:
+        path: "/var/lib/selinux/targeted/active/modules/{{ topic_staff_wayland_memfd_cil_priority }}/{{ topic_staff_wayland_memfd_cil_module_name }}/cil"
+      register: existing_module_slot
+      changed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      when:
+        - not (topic_staff_wayland_memfd_already_closed | default(false) | bool)
+
+    - name: "topic_staff_wayland_memfd | re-install audit anchor (backup currently installed CIL source)"
+      ansible.builtin.copy:
+        src: "/var/lib/selinux/targeted/active/modules/{{ topic_staff_wayland_memfd_cil_priority }}/{{ topic_staff_wayland_memfd_cil_module_name }}/cil"
+        dest: "{{ topic_staff_wayland_memfd_cil_source_backup_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      when:
+        - not (topic_staff_wayland_memfd_already_closed | default(false) | bool)
+        - existing_module_slot.stat.exists | default(false)
+
+    - name: "topic_staff_wayland_memfd | install CIL source"
+      ansible.builtin.copy:
+        src: "{{ topic_staff_wayland_memfd_cil_module_name }}.cil"
+        dest: "{{ topic_staff_wayland_memfd_cil_source_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      when:
+        - not (topic_staff_wayland_memfd_already_closed | default(false) | bool)
+
+    - name: "topic_staff_wayland_memfd | install CIL module at priority {{ topic_staff_wayland_memfd_cil_priority }}"
+      ansible.builtin.command:
+        argv:
+          - semodule
+          - "-X"
+          - "{{ topic_staff_wayland_memfd_cil_priority }}"
+          - "-i"
+          - "{{ topic_staff_wayland_memfd_cil_source_path }}"
+        creates: "/var/lib/selinux/targeted/active/modules/{{ topic_staff_wayland_memfd_cil_priority }}/{{ topic_staff_wayland_memfd_cil_module_name }}/cil"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      when:
+        - not (topic_staff_wayland_memfd_already_closed | default(false) | bool)
+
+    - name: "topic_staff_wayland_memfd | post-load sesearch on functional surface (write)"
+      ansible.builtin.command:
+        argv:
+          - sesearch
+          - "-A"
+          - "-s"
+          - "staff_t"
+          - "-t"
+          - "tmpfs_t"
+          - "-c"
+          - "file"
+          - "-p"
+          - "write"
+      register: post_rule_write
+      changed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_staff_wayland_memfd | post-load sesearch on functional surface (map, unconditional only)"
+      ansible.builtin.shell: >
+        set -o pipefail;
+        sesearch -A -s staff_t -t tmpfs_t -c file -p map
+        | grep -v 'domain_can_mmap_files' || true
+      args:
+        executable: /bin/bash
+      register: post_rule_map
+      changed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_staff_wayland_memfd | assert post-load allow surface is present (both permissions)"
+      ansible.builtin.assert:
+        that:
+          - (post_rule_write.stdout | length) > 0
+          - (post_rule_map.stdout | length) > 0
+        fail_msg: |
+          staff-wayland-memfd: post-load sesearch did not confirm both
+          permissions of the functional vector in the loaded policy
+          (write present: {{ (post_rule_write.stdout | length) > 0 }},
+          map present: {{ (post_rule_map.stdout | length) > 0 }}). The
+          access vector requires both write and map; a partial grant
+          leaves the buffer attach broken on the missing half.
+          Investigate the policy store and the module slot under
+          /var/lib/selinux/targeted/active/modules/{{ topic_staff_wayland_memfd_cil_priority }}/{{ topic_staff_wayland_memfd_cil_module_name }}/.
+
+    - name: "topic_staff_wayland_memfd | report end-state"
+      ansible.builtin.debug:
+        msg: |
+          staff-wayland-memfd end-state snapshot:
+          write_present={{ (post_rule_write.stdout | length) > 0 }},
+          map_present={{ (post_rule_map.stdout | length) > 0 }},
+          obsolescence_no_op={{ topic_staff_wayland_memfd_already_closed | default(false) }}.
+
+  rescue:
+
+    - name: "topic_staff_wayland_memfd | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_staff_wayland_memfd apply step failed. Auto-rollback is
+          intentionally not performed; the single-stage rollback
+          (`semodule -X {{ topic_staff_wayland_memfd_cil_priority }} -r {{ topic_staff_wayland_memfd_cil_module_name }}` under sysadm_r)
+          is operator-driven and is documented in the topic Reference.
+          Boot-failure risk for this topic is structurally zero — the
+          single allow rule grants access on a user-session compositor
+          domain that is not active during the boot sequence and is not
+          reachable from init_t.
+
+  tags:
+    - topic_staff_wayland_memfd
+    - apply
+
+- name: "topic_staff_wayland_memfd | flush handlers before verify"
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - topic_staff_wayland_memfd
+    - apply
+
+- name: "topic_staff_wayland_memfd | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_staff_wayland_memfd
+    - verify

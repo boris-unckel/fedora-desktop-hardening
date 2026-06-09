@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_plymouth.
+#
+# Two notification channels:
+#   "topic_plymouth cil changed"    — fires on a change to the CIL source
+#                                      file. Triggers semodule install
+#                                      under sysadm_r.
+#   "topic_plymouth dropin changed" — fires on a change to any of the
+#                                      three drop-in files. Triggers
+#                                      restorecon and daemon-reload.
+#
+# There is no `restart plymouth-start` handler: plymouth-start runs once
+# during the early-boot sequence and the splash hand-off has already
+# completed by the time the role finishes deploying. The apply path is
+# the next reboot.
+
+- name: "topic_plymouth | semodule install nnp_plymouth"
+  ansible.builtin.command:
+    argv:
+      - semodule
+      - "-X"
+      - "{{ topic_plymouth_cil_priority | string }}"
+      - "-i"
+      - "{{ topic_plymouth_cil_dir }}/{{ topic_plymouth_cil_module_name }}.cil"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_plymouth cil changed"
+
+- name: "topic_plymouth | restorecon plymouth-start drop-ins"
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-v"
+      - "{{ topic_plymouth_dropin_dir }}/99-hardening.conf"
+      - "{{ topic_plymouth_dropin_dir }}/99-nnp.conf"
+      - "{{ topic_plymouth_dropin_dir }}/99-process-restrict.conf"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_plymouth dropin changed"
+
+- name: "topic_plymouth | daemon-reload"
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "topic_plymouth dropin changed"

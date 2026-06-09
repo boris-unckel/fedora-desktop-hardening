@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# foundation_sudo_roles has no runtime handlers.
+#
+# semanage login -m updates /etc/selinux/targeted/seusers and the policy-store
+# mapping; pam_selinux reads the mapping at the next interactive login. No
+# service restart is required and no reboot is required.
+#
+# lineinfile against /etc/sudoers takes effect at the next sudo invocation;
+# sudo re-reads its configuration on every call.
+#
+# semodule -X 400 -i activates the policy module at semodule exit. No daemon
+# restart is required.
+#
+# The role pauses for nothing.

@@ -1,0 +1,208 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_kernel_hardening
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying does not change state on a correctly
+# configured host; see README.md "Idempotence notes").
+#
+# Modify ordering invariant:
+#   1. Push 99-hardening.conf, flush handlers, sysctl --system reload.
+#   2. Push hardening.conf (modprobe drop-in; no reload needed).
+#   3. Push 90-nocore.conf (PAM-limits drop-in; takes effect at next login).
+#   4. Push disable.conf, flush handlers, daemon-reload.
+#   5. restorecon defence-in-depth on the four paths.
+#   6. grubby cmdline apply (idempotent gated).
+#   7. pause: reboot prompt (the bootloader argument set is activated only
+#      by reboot; PAM-limits and the coredump drop-in become authoritative
+#      across the whole runtime only after the next reboot).
+# A change to any shipping artefact notifies the appropriate handler chain.
+
+- name: "topic_kernel_hardening | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_kernel_hardening
+    - preflight
+
+- name: "topic_kernel_hardening | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_kernel_hardening
+    - probe
+
+- name: "topic_kernel_hardening | apply configuration"
+  block:
+
+    - name: "topic_kernel_hardening | install 99-hardening.conf"
+      ansible.builtin.copy:
+        src: "99-hardening.conf"
+        dest: "{{ topic_kernel_hardening_sysctl_dir }}/99-hardening.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      notify:
+        - "topic_kernel_hardening sysctl changed"
+        - "topic_kernel_hardening dropin changed"
+
+    - name: "topic_kernel_hardening | append per-interface stanzas (optional)"
+      ansible.builtin.blockinfile:
+        path: "{{ topic_kernel_hardening_sysctl_dir }}/99-hardening.conf"
+        marker: "# {mark} ANSIBLE MANAGED BLOCK per-interface strict mode"
+        block: |
+          {% for iface in topic_kernel_hardening_strict_interfaces %}
+          net.ipv4.conf.{{ iface }}.rp_filter = 1
+          net.ipv4.conf.{{ iface }}.log_martians = 1
+          {% endfor %}
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      when: topic_kernel_hardening_strict_interfaces | length > 0
+      notify:
+        - "topic_kernel_hardening sysctl changed"
+
+    - name: "topic_kernel_hardening | flush handlers (sysctl reload before next push)"
+      ansible.builtin.meta: flush_handlers
+
+    - name: "topic_kernel_hardening | install hardening.conf (modprobe drop-in)"
+      ansible.builtin.copy:
+        src: "hardening.conf"
+        dest: "{{ topic_kernel_hardening_modprobe_dir }}/hardening.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      notify:
+        - "topic_kernel_hardening dropin changed"
+
+    - name: "topic_kernel_hardening | install 90-nocore.conf"
+      ansible.builtin.copy:
+        src: "90-nocore.conf"
+        dest: "{{ topic_kernel_hardening_limits_dir }}/90-nocore.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      notify:
+        - "topic_kernel_hardening dropin changed"
+
+    - name: "topic_kernel_hardening | ensure the coredump drop-in directory exists"
+      # Stock Fedora ships /etc/systemd/coredump.conf (a flat file) but not the
+      # coredump.conf.d/ drop-in directory; ansible.builtin.copy does not create
+      # parent directories, so the disable.conf install below would fail on a
+      # clean host without this step.
+      ansible.builtin.file:
+        path: "{{ topic_kernel_hardening_coredump_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_kernel_hardening | install disable.conf (coredump drop-in)"
+      ansible.builtin.copy:
+        src: "disable.conf"
+        dest: "{{ topic_kernel_hardening_coredump_dir }}/disable.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      notify:
+        - "topic_kernel_hardening coredump changed"
+        - "topic_kernel_hardening dropin changed"
+
+    - name: "topic_kernel_hardening | flush handlers (daemon-reload + restorecon)"
+      ansible.builtin.meta: flush_handlers
+
+    - name: "topic_kernel_hardening | read current BLS bootloader arguments"
+      # Idempotence is judged against the BLS entries (what grubby manages), not
+      # /proc/cmdline. The running cmdline never carries the new args until the
+      # next reboot, so gating changed_when on it would report changed on every
+      # converge and fail the idempotence check; the BLS args reflect the actual
+      # persisted state grubby writes.
+      ansible.builtin.command:
+        argv:
+          - grubby
+          - "--info=ALL"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      register: bls_info_before
+      changed_when: false
+
+    - name: "topic_kernel_hardening | apply bootloader argument set (idempotent gated)"
+      ansible.builtin.command:
+        argv:
+          - grubby
+          - "--update-kernel=ALL"
+          - "--args={{ topic_kernel_hardening_cmdline_args }}"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      register: grubby_apply
+      changed_when: >
+        topic_kernel_hardening_expected_cmdline_substrings
+        | reject('in', bls_info_before.stdout)
+        | list | length > 0
+
+    - name: "topic_kernel_hardening | report cmdline apply outcome"
+      ansible.builtin.debug:
+        msg: >
+          Bootloader argument set applied to all installed kernel BLS
+          entries. The currently-running kernel does not pick up the
+          changed cmdline; reboot is required for the running kernel to
+          enter the new cmdline state. grubby_apply.changed
+          ={{ grubby_apply.changed }}.
+
+    - name: "topic_kernel_hardening | reboot prompt"
+      ansible.builtin.pause:
+        prompt: |
+          The bootloader argument set is activated only by reboot; the role
+          applies the argument set, prompts the operator with this pause
+          task that displays the byte-exact reboot rationale, and
+          continues only after operator confirmation. Apply-on-running-
+          kernel is structurally unavailable for the bootloader argument
+          subset.
+
+          Press <ENTER> to continue without rebooting (verify will run on
+          the still-running kernel and report the cmdline-related checks
+          as drift until the next reboot), or interrupt with Ctrl-C to
+          reboot now.
+
+  rescue:
+
+    - name: "topic_kernel_hardening | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_kernel_hardening apply step failed. Auto-rollback is
+          intentionally not performed; rolling back the five artefacts
+          requires an operator decision. See the topic Reference under
+          "Idempotence and rollback" for the single-stage rollback
+          sequence and the recover-from-boot-failure how-to for the
+          (unlikely) boot-failure variant.
+
+  tags:
+    - topic_kernel_hardening
+    - apply
+
+- name: "topic_kernel_hardening | flush handlers before verify"
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - topic_kernel_hardening
+    - apply
+
+- name: "topic_kernel_hardening | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_kernel_hardening
+    - verify

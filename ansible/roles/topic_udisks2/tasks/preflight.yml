@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_udisks2. Block apply when the host family is
+# wrong, when the udisks2 vendor unit is missing, when the stock-policy
+# nnp_transition allow rule for devicekit_disk_t is absent, or when the
+# core package is not installed. Records the SATA-SMART pre-hardening
+# baseline as informational; does not gate apply on it.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_udisks2 targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | udisks2.service vendor unit present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/udisks2.service"
+  register: vendor_unit
+  failed_when: not (vendor_unit.stat.exists | default(false))
+
+- name: "preflight | core package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: core_pkg_check
+  changed_when: false
+  failed_when: core_pkg_check.rc != 0
+  loop: "{{ topic_udisks2_required_packages }}"
+
+- name: "preflight | optional sub-packages inventory"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: optional_pkg_check
+  changed_when: false
+  failed_when: false
+  loop: "{{ topic_udisks2_optional_packages }}"
+
+- name: "preflight | report optional sub-packages"
+  ansible.builtin.debug:
+    msg: >
+      udisks2 sub-package {{ item.item }} rc={{ item.rc }} ({{
+      'installed' if item.rc == 0 else 'absent (informational, not required)'
+      }}).
+  loop: "{{ optional_pkg_check.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "preflight | SELinux nnp_transition allow check"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "init_t"
+      - "-t"
+      - "{{ topic_udisks2_expected_selinux_domain }}"
+      - "-c"
+      - "process2"
+      - "-p"
+      - "nnp_transition"
+  register: nnp_check
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | abort if nnp_transition allow is missing"
+  ansible.builtin.fail:
+    msg: |
+      Stock SELinux policy is missing the
+      (allow init_t {{ topic_udisks2_expected_selinux_domain }}
+                 (process2 (nnp_transition))) rule.
+      The 99-nnp.conf drop-in would prevent boot on this host.
+      This class of host falls under the nnp-selinux-transition-trap
+      pattern; deploy the policy extension before applying this role.
+  when: nnp_check.stdout | trim == ""
+
+- name: "preflight | SATA-SMART pre-hardening baseline (informational)"
+  ansible.builtin.shell: >
+    journalctl -u udisks2.service -b 0
+    | grep -ciE 'sgio|housekeeping|operation not permitted'
+    || true
+  args:
+    executable: /bin/bash
+  register: smart_baseline
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report SATA-SMART pre-hardening baseline"
+  ansible.builtin.debug:
+    msg: >
+      SATA-SMART pre-hardening baseline (journalctl entries containing
+      sgio/housekeeping/operation not permitted across this boot):
+      {{ smart_baseline.stdout | default('0') | trim }}.
+      A non-zero baseline indicates a pre-existing condition; the
+      post-deploy verify must reconcile against this number.

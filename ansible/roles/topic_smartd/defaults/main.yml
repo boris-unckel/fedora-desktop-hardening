@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_smartd. Override in group_vars or playbook.
+
+# Drop-in directory for smartd.service.
+topic_smartd_dropin_dir: "/etc/systemd/system/smartd.service.d"
+
+# Priority-400 CIL publish directory.
+topic_smartd_cil_dir: "/usr/local/share/selinux"
+
+# Required package: the daemon and its command-line client.
+topic_smartd_required_packages:
+  - smartmontools
+
+# Expected effective values surfaced from `systemctl show --value`.
+# CapabilityBoundingSet is alphabetical, lower-case, single-space-separated.
+# RestrictAddressFamilies is a single value, no source-order question.
+topic_smartd_expected_caps: "cap_sys_admin cap_sys_rawio"
+topic_smartd_expected_address_families: "AF_UNIX"
+topic_smartd_expected_selinux_domain: "fsdaemon_t"
+
+# Topic-owned CIL module name and load priority.
+topic_smartd_cil_module_name: "nnp_smartd"
+topic_smartd_cil_priority: 400
+
+# F44 sbin/bin-merge fcontext target and type.
+topic_smartd_fcontext_path: "/usr/bin/smartd"
+topic_smartd_fcontext_setype: "fsdaemon_exec_t"
+topic_smartd_fcontext_expected: "system_u:object_r:fsdaemon_exec_t:s0"

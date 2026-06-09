@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_mozilla_thunderbird.
+#
+# This role ships no handlers. The post-override per-user xdg-document-portal
+# reset reflex is encoded as a regular task in tasks/main.yml with a `when:`
+# clause consulting the registered fact
+# `__topic_mozilla_thunderbird_overrides_changed` set by the override task
+# and the three portal-permission tasks to `true` if any of them reported
+# `changed=true`. It is NOT a handler — handlers fire after the entire play
+# and would defer the cache reset past the post-deploy verify window,
+# surfacing stale portal tokens as false-negatives.
+#
+# There is no daemon-reload (no system-side unit changes), no restorecon
+# (no labels altered), no system-bus restart (no system-bus dbus-broker
+# action), no CIL-module install, and no host reboot. The file is present
+# for skeleton consistency.

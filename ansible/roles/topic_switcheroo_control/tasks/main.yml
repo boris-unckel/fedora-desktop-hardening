@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_switcheroo_control
+# Pattern: Preflight -> Modify (single canonical action) -> Verify
+# Idempotent: yes (re-applying does not change state on a host already
+# in the end-state; ansible.builtin.systemd_service reports
+# changed=false). See README.md "Idempotence notes".
+#
+# Modify ordering invariant:
+#   1. Preflight (OS family, package presence, hybrid-GPU detection,
+#      pre-hardening sanity baseline).
+#   2. Single ansible.builtin.systemd_service task with
+#      enabled=false and state=stopped — the module performs both the
+#      WantedBy=graphical.target symlink removal and the daemon stop in
+#      one systemd transaction.
+#
+# No CIL load step. No drop-in push step. No restorecon handler. No
+# daemon-reload handler. The role's ordering is the simplest in this
+# tree.
+
+- name: "topic_switcheroo_control | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_switcheroo_control
+    - preflight
+
+- name: "topic_switcheroo_control | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_switcheroo_control
+    - probe
+
+- name: "topic_switcheroo_control | apply configuration"
+  block:
+
+    - name: "topic_switcheroo_control | disable and stop the unit"
+      ansible.builtin.systemd_service:
+        name: "{{ topic_switcheroo_control_unit_name }}"
+        enabled: false
+        state: stopped
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_switcheroo_control | read live MainPID after disable"
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - "show"
+          - "-p"
+          - "MainPID"
+          - "--value"
+          - "{{ topic_switcheroo_control_unit_name }}"
+      register: live_main_pid
+      changed_when: false
+
+    - name: "topic_switcheroo_control | stat graphical.target.wants symlink"
+      ansible.builtin.stat:
+        path: "{{ topic_switcheroo_control_graphical_target_wants_symlink }}"
+        follow: false
+      register: live_symlink_stat
+
+    - name: "topic_switcheroo_control | read AVC count since boot"
+      ansible.builtin.shell: >
+        ausearch -m AVC,USER_AVC -ts boot
+        | grep -cE '(switcheroo|switcheroo_control_t|switcheroo_control_exec_t)'
+        || true
+      args:
+        executable: /bin/bash
+      register: avc_count
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_switcheroo_control | report end-state"
+      ansible.builtin.debug:
+        msg: >
+          switcheroo-control end-state snapshot:
+          MainPID={{ live_main_pid.stdout | trim }},
+          symlink_present={{ live_symlink_stat.stat.exists | default(false) }},
+          AVC count since boot={{ (avc_count.stdout | default('0')) | trim }}.
+
+  rescue:
+
+    - name: "topic_switcheroo_control | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_switcheroo_control apply step failed. Auto-rollback is
+          intentionally not performed; reverting to a running daemon
+          requires an operator decision (typically
+          `systemctl enable --now switcheroo-control.service` under the
+          sysadm_r role-switch). See the topic Reference under
+          "Verification" for the single-stage rollback action and the
+          recover-from-boot-failure how-to for the boot-failure variant
+          (boot-failure risk for this topic is structurally zero —
+          disabling a unit cannot brick the boot path).
+
+  tags:
+    - topic_switcheroo_control
+    - apply
+
+- name: "topic_switcheroo_control | flush handlers before verify"
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - topic_switcheroo_control
+    - apply
+
+- name: "topic_switcheroo_control | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_switcheroo_control
+    - verify

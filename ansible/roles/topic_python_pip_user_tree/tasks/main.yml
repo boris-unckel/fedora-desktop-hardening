@@ -1,0 +1,172 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_python_pip_user_tree
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying does not change state on a correctly configured
+# host; the marker body is content-hash-checked by ansible.builtin.template).
+#
+# Modify ordering invariant:
+#   1. Render the PEP-668 marker into the discovered stdlib path with mode 0644
+#      root:root. The path is resolved in preflight from sysconfig.get_path
+#      ("stdlib"); it is not hard-coded.
+#   2. Surface the orphan-marker, orphan-user-tree, and sudo-pip-layer reports.
+#      The role does NOT auto-remove orphan trees; the operator runs the
+#      destructive cleanup explicitly.
+#   3. Surface the symmetric-pip discipline pause: task with the byte-exact
+#      recommended form. The role does NOT auto-edit any operator-named file.
+
+- name: "topic_python_pip_user_tree | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_python_pip_user_tree
+    - preflight
+
+- name: "topic_python_pip_user_tree | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_python_pip_user_tree
+    - probe
+
+- name: "topic_python_pip_user_tree | apply configuration"
+  block:
+
+    - name: "topic_python_pip_user_tree | render PEP-668 marker into discovered stdlib path"
+      ansible.builtin.template:
+        src: "EXTERNALLY-MANAGED.j2"
+        dest: "{{ topic_python_pip_user_tree_resolved_marker_path }}"
+        owner: "{{ topic_python_pip_user_tree_expected_marker_owner }}"
+        group: "{{ topic_python_pip_user_tree_expected_marker_group }}"
+        mode: "0{{ topic_python_pip_user_tree_expected_marker_mode }}"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_python_pip_user_tree | enumerate non-active-minor markers"
+      ansible.builtin.find:
+        paths: "/usr/lib64"
+        patterns: "python3.*"
+        file_type: directory
+      register: stdlib_dirs
+      changed_when: false
+
+    - name: "topic_python_pip_user_tree | remove markers under non-active-minor stdlib paths"
+      ansible.builtin.file:
+        path: "{{ item.path }}/{{ topic_python_pip_user_tree_marker_filename }}"
+        state: absent
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      loop: "{{ stdlib_dirs.files | default([]) }}"
+      loop_control:
+        label: "{{ item.path }}"
+      when:
+        - item.path != topic_python_pip_user_tree_resolved_stdlib
+        - not (item.path | basename | regex_search('^python' + topic_python_pip_user_tree_resolved_python_minor + '$'))
+
+    - name: "topic_python_pip_user_tree | detect orphan user-trees (informational; not auto-removed)"
+      ansible.builtin.shell: |
+        set +e
+        for d in {{ topic_python_pip_user_tree_user_home }}/.local/lib/python3.*; do
+          [ -d "$d" ] || continue
+          minor=$(basename "$d" | sed 's/^python//')
+          if [ ! -x "/usr/bin/python${minor}" ]; then
+            printf '%s\n' "$d"
+          fi
+        done
+        exit 0
+      args:
+        executable: /bin/bash
+      register: orphan_user_trees
+      changed_when: false
+      failed_when: false
+      when: topic_python_pip_user_tree_check_orphan_user_trees | bool
+
+    - name: "topic_python_pip_user_tree | report orphan user-trees"
+      ansible.builtin.debug:
+        msg: >
+          Orphan user-trees detected (each entry is a
+          ~/.local/lib/python3.X directory whose corresponding
+          /usr/bin/python3.X interpreter is no longer installed; the role
+          does not auto-remove operator data, the operator runs the cleanup
+          from the topic Reference under "Orphan tree cleanup"):
+          {{ (orphan_user_trees.stdout_lines | default([])) }}.
+      when:
+        - topic_python_pip_user_tree_check_orphan_user_trees | bool
+        - (orphan_user_trees.stdout_lines | default([])) | length > 0
+
+    - name: "topic_python_pip_user_tree | detect sudo-pip layer (informational; not auto-removed)"
+      ansible.builtin.shell: |
+        set +e
+        ls -d /usr/local/lib/python3.* 2>/dev/null
+        ls /usr/local/bin/pip* /usr/local/sbin/pip* 2>/dev/null
+        exit 0
+      args:
+        executable: /bin/bash
+      register: userlocal_pip_layer
+      changed_when: false
+      failed_when: false
+      when: topic_python_pip_user_tree_check_userlocal_pip_layer | bool
+
+    - name: "topic_python_pip_user_tree | symmetric-pip-discipline reminder"
+      ansible.builtin.pause:
+        prompt: |
+          The role does not auto-edit operator update scripts. Confirm that
+          the operator's update flow uses the symmetric --user form, not the
+          asymmetric form below.
+
+          Recommended (symmetric):
+            pip3 list --outdated --user --format=json \
+              | jq -r '.[] | .name' \
+              | xargs -r -n1 pip3 install --user -U
+
+          Anti-pattern (asymmetric; lists from system tree, installs into
+          user tree, becomes a no-op after a Python minor-bump):
+            sudo pip3 list --outdated --format=json \
+              | jq -r '.[] | .name' \
+              | xargs -r -n1 pip3 install --user -U
+
+          If the operator's update script still uses the asymmetric form,
+          fix it now in another shell. Press ENTER to continue once the
+          script is symmetric. The role intentionally does not write to any
+          operator-named file.
+
+          Orphan user-trees detected (operator-driven cleanup; not run by
+          the role):
+            {{ (orphan_user_trees.stdout_lines | default([])) | join(', ') | default('(none)', true) }}
+
+          Sudo-pip layer detected (operator-driven cleanup under
+          sudo -r sysadm_r -t sysadm_t; not run by the role):
+            {{ (userlocal_pip_layer.stdout | default('') | trim) | default('(none)', true) }}
+      when:
+        - topic_python_pip_user_tree_surface_discipline_pause | default(true) | bool
+
+  rescue:
+
+    - name: "topic_python_pip_user_tree | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_python_pip_user_tree apply step failed. Auto-rollback is
+          intentionally not performed; the rollback decision is operator-
+          owned (Stage 1 removes the marker only, Stage 2 additionally
+          drops the symmetric-pip discipline from operator update scripts).
+          See the topic Reference under "Idempotence and rollback".
+
+  tags:
+    - topic_python_pip_user_tree
+    - apply
+
+- name: "topic_python_pip_user_tree | flush handlers before verify"
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - topic_python_pip_user_tree
+    - apply
+
+- name: "topic_python_pip_user_tree | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_python_pip_user_tree
+    - verify

@@ -1,0 +1,224 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_cups. Block apply when the host family is
+# wrong, when the cups vendor unit is missing, when the cups package is
+# not installed, or when matchpathcon for the daemon binary returns
+# cupsd_exec_t from neither /usr/sbin/cupsd nor /usr/bin/cupsd. The
+# stock-policy nnp_transition pre-test for the main domain, the three
+# helper-subdomain pre-tests, the F44 stock-unit near-empty directive
+# recon, and the pre-deploy printer baseline are captured as non-fatal
+# reports.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_cups targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | cups.service vendor unit present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/cups.service"
+  register: vendor_unit
+  failed_when: not (vendor_unit.stat.exists | default(false))
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_cups_required_packages }}"
+
+- name: "preflight | lpinfo tooling available"
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "-c"
+      - "command -v lpinfo"
+  register: lpinfo_check
+  changed_when: false
+  failed_when: lpinfo_check.rc != 0
+
+- name: "preflight | F44 stock-unit near-empty directive recon"
+  ansible.builtin.shell: >
+    grep -E
+    '^(RuntimeDirectory|StateDirectory|ConfigurationDirectory|LogsDirectory|ProtectSystem|ProtectHome|ProtectKernel|ProtectControl|ProtectClock|ProtectHostname|ProtectProc|PrivateTmp|PrivateDevices|PrivateUsers|RestrictNamespaces|RestrictRealtime|RestrictSUIDSGID|RestrictAddressFamilies|LockPersonality|MemoryDenyWriteExecute|SystemCallFilter|SystemCallArchitectures|DeviceAllow|CapabilityBoundingSet|NoNewPrivileges|AmbientCapabilities|UMask|ProcSubset|User|Group|Type|ExecStart|ExecReload|Slice|Restart|NotifyAccess)='
+    /usr/lib/systemd/system/cups.service
+    || true
+  args:
+    executable: /bin/bash
+  register: stock_directive_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report stock unit directive recon"
+  ansible.builtin.debug:
+    msg: >
+      Stock cups.service near-empty baseline directives (non-fatal
+      report; a future package version that adds a directive overlapping
+      a topic-owned directive requires manifest revision before applying
+      this role): {{ stock_directive_recon.stdout | trim }}.
+
+- name: "preflight | matchpathcon for /usr/sbin/cupsd"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "/usr/sbin/cupsd"
+  register: matchpathcon_sbin
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | matchpathcon for /usr/bin/cupsd"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "/usr/bin/cupsd"
+  register: matchpathcon_bin
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast if matchpathcon returns cupsd_exec_t from neither path"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon for cupsd returned a non-cupsd_exec_t mapping from
+      both candidate paths:
+        /usr/sbin/cupsd -> {{ matchpathcon_sbin.stdout | trim }}
+        /usr/bin/cupsd  -> {{ matchpathcon_bin.stdout | trim }}
+      The stock fcontext for the daemon binary has been displaced. The
+      manifest needs revision before applying this role. Open a fresh
+      topic session against an extended manifest.
+  when:
+    - (matchpathcon_sbin.stdout | regex_search('cupsd_exec_t')) is none
+    - (matchpathcon_bin.stdout | regex_search('cupsd_exec_t')) is none
+
+- name: "preflight | report matchpathcon outcome"
+  ansible.builtin.debug:
+    msg: >
+      matchpathcon /usr/sbin/cupsd: {{ matchpathcon_sbin.stdout | trim }};
+      matchpathcon /usr/bin/cupsd:  {{ matchpathcon_bin.stdout | trim }}.
+
+- name: "preflight | SELinux nnp_transition pre-test for main domain (expected empty)"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "init_t"
+      - "-t"
+      - "{{ topic_cups_expected_selinux_domain }}"
+      - "-c"
+      - "process2"
+      - "-p"
+      - "nnp_transition"
+  register: nnp_check
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report SELinux nnp_transition pre-test outcome (main domain)"
+  ansible.builtin.debug:
+    msg: >
+      SELinux nnp_transition pre-test for
+      init_t -> {{ topic_cups_expected_selinux_domain }}:
+      {{ 'EMPTY (expected; topic CIL is required and will be installed)'
+         if (nnp_check.stdout | trim) == '' else
+         'NON-EMPTY (the rule is already in policy; topic CIL install at '
+         + 'priority 400 is idempotent and overlays without harm)' }}.
+
+- name: "preflight | SELinux nnp_transition helper-subdomain pre-tests (informational)"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "{{ topic_cups_expected_selinux_domain }}"
+      - "-t"
+      - "{{ item }}"
+      - "-c"
+      - "process2"
+      - "-p"
+      - "nnp_transition"
+  register: helper_nnp_checks
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  loop: "{{ topic_cups_helper_subdomains }}"
+
+- name: "preflight | report helper-subdomain pre-test outcomes"
+  ansible.builtin.debug:
+    msg: >
+      Helper-subdomain nnp_transition pre-test
+      {{ topic_cups_expected_selinux_domain }} -> {{ item.item }}:
+      {{ 'EMPTY (CIL rule from nnp_cups.cil is required; will be installed)'
+         if (item.stdout | trim) == '' else
+         'NON-EMPTY (already in stock policy; CIL rule overlays as no-op)' }}.
+  loop: "{{ helper_nnp_checks.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "preflight | printer baseline | unit active"
+  ansible.builtin.shell: >
+    systemctl is-active cups.service || true
+  args:
+    executable: /bin/bash
+  register: preflight_unit_active
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | printer baseline | error stream tail"
+  ansible.builtin.shell: >
+    journalctl -b 0 -p err -u cups.service --no-pager | tail -20 || true
+  args:
+    executable: /bin/bash
+  register: preflight_err_tail
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | printer baseline | lpstat -p -d"
+  ansible.builtin.shell: >
+    lpstat -p -d || true
+  args:
+    executable: /bin/bash
+  register: preflight_lpstat
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | printer baseline | listening sockets"
+  ansible.builtin.shell: >
+    ss -ltn 'sport = 631' || true
+  args:
+    executable: /bin/bash
+  register: preflight_listen
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | printer baseline | lpinfo -v"
+  ansible.builtin.shell: >
+    lpinfo -v || true
+  args:
+    executable: /bin/bash
+  register: preflight_lpinfo
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report printer baseline"
+  ansible.builtin.debug:
+    msg: >
+      Pre-deploy printer baseline (non-fatal report; a non-empty error
+      stream signals a pre-existing cups issue that the operator should
+      investigate before deploying this role): unit-active={{ preflight_unit_active.stdout | trim }};
+      err-journal-tail-bytes={{ (preflight_err_tail.stdout | default('') | length) }};
+      lpstat-rc={{ preflight_lpstat.rc }};
+      lpstat-stdout-bytes={{ (preflight_lpstat.stdout | default('') | length) }};
+      listen-stdout-bytes={{ (preflight_listen.stdout | default('') | length) }};
+      lpinfo-rc={{ preflight_lpinfo.rc }};
+      lpinfo-stdout-bytes={{ (preflight_lpinfo.stdout | default('') | length) }}.

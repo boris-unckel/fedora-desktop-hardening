@@ -1,0 +1,175 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_dbus_broker
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying does not change state on a correctly
+# configured host; see README.md "Idempotence notes").
+#
+# Modify ordering invariant:
+#   1. Push CIL source to /usr/local/share/selinux/.
+#   2. Install CIL module via semodule -X 400 -i (handler).
+#   3. flush_handlers — the CIL must be loaded before the NNP drop-in.
+#   4. Push the two drop-in INI files.
+#   5. restorecon on the drop-in files (handler).
+#   6. Daemon-reload + restart (handlers).
+# A change to any of the three shipping artefacts notifies the
+# appropriate handler chain. Live-state probe is read-only.
+
+- name: "topic_dbus_broker | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_dbus_broker
+    - preflight
+
+- name: "topic_dbus_broker | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_dbus_broker
+    - probe
+
+- name: "topic_dbus_broker | apply configuration"
+  block:
+
+    - name: "topic_dbus_broker | CIL publish directory present"
+      ansible.builtin.file:
+        path: "{{ topic_dbus_broker_cil_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "topic_dbus_broker | install CIL source"
+      ansible.builtin.copy:
+        src: "{{ topic_dbus_broker_cil_module_name }}.cil"
+        dest: "{{ topic_dbus_broker_cil_dir }}/{{ topic_dbus_broker_cil_module_name }}.cil"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_dbus_broker cil changed"
+
+    - name: "topic_dbus_broker | flush handlers (CIL must be loaded before NNP drop-in)"
+      ansible.builtin.meta: flush_handlers
+
+    - name: "topic_dbus_broker | drop-in directory present"
+      ansible.builtin.file:
+        path: "{{ topic_dbus_broker_dropin_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "topic_dbus_broker | install 99-hardening.conf"
+      ansible.builtin.copy:
+        src: "99-hardening.conf"
+        dest: "{{ topic_dbus_broker_dropin_dir }}/99-hardening.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_dbus_broker dropin changed"
+
+    - name: "topic_dbus_broker | install 99-nnp.conf"
+      ansible.builtin.copy:
+        src: "99-nnp.conf"
+        dest: "{{ topic_dbus_broker_dropin_dir }}/99-nnp.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify:
+        - "topic_dbus_broker dropin changed"
+
+    - name: "topic_dbus_broker | read live MainPID"
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - "show"
+          - "-p"
+          - "MainPID"
+          - "--value"
+          - "dbus-broker.service"
+      register: live_main_pid
+      changed_when: false
+
+    - name: "topic_dbus_broker | read live SELinux domain"
+      ansible.builtin.shell: >
+        awk -F: '{print $3}' /proc/{{ live_main_pid.stdout | trim }}/attr/current
+      args:
+        executable: /bin/bash
+      register: live_domain
+      changed_when: false
+      failed_when: false
+      when: (live_main_pid.stdout | trim) not in ['', '0']
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_dbus_broker | read AVC count since boot"
+      ansible.builtin.shell: >
+        ausearch -m AVC -ts boot
+        | grep -cE '(system_dbusd_t|nnp_transition|dbus_broker|dbusd_exec_t)'
+        || true
+      args:
+        executable: /bin/bash
+      register: avc_count
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_dbus_broker | read post-deploy busctl --system list"
+      ansible.builtin.shell: >
+        busctl --system list || true
+      args:
+        executable: /bin/bash
+      register: post_deploy_busctl
+      changed_when: false
+      failed_when: false
+
+    - name: "topic_dbus_broker | report live state"
+      ansible.builtin.debug:
+        msg: >
+          dbus-broker MainPID={{ live_main_pid.stdout | trim }},
+          SELinux domain={{ (live_domain.stdout | default('?')) | trim }},
+          AVC count since boot={{ (avc_count.stdout | default('0')) | trim }},
+          busctl --system list rc={{ post_deploy_busctl.rc | default('?') }},
+          busctl-stdout-bytes={{ (post_deploy_busctl.stdout | default('') | length) }}.
+
+  rescue:
+
+    - name: "topic_dbus_broker | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_dbus_broker apply step failed. Auto-rollback is
+          intentionally not performed; rolling back the three artefacts
+          requires an operator decision about which stage to revert (NNP
+          plus CIL unload only, or both stages including the topic-owned
+          hardening surface). See the topic Reference under "Verification"
+          for the two-stage rollback sequence and the recover-from-boot-
+          failure how-to for the boot-failure variant.
+
+  tags:
+    - topic_dbus_broker
+    - apply
+
+- name: "topic_dbus_broker | flush handlers before verify"
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - topic_dbus_broker
+    - apply
+
+- name: "topic_dbus_broker | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_dbus_broker
+    - verify

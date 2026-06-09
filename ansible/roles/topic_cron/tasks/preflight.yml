@@ -1,0 +1,213 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_cron. Block apply when the host family is
+# wrong, when the crond vendor unit is missing, when the cronie package
+# is not installed, or when neither matchpathcon for the canonical
+# /usr/bin/crond nor the pre-merge /usr/sbin/crond resolves to
+# crond_exec_t. Stock-policy nnp_transition pre-tests for both rules,
+# the stock type-transition recon, and the pre-hardening Soll-state
+# recon are non-fatal reports.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_cron targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | crond.service vendor unit present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/crond.service"
+  register: vendor_unit
+  failed_when: not (vendor_unit.stat.exists | default(false))
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_cron_required_packages }}"
+
+- name: "preflight | stock unit sparse-baseline recon"
+  ansible.builtin.shell: >
+    grep -E
+    '^(Type|ExecStart|EnvironmentFile|Condition|RuntimeDirectory|StateDirectory|ConfigurationDirectory|LogsDirectory|ProtectSystem|ProtectHome|ProtectKernel|ProtectControlGroups|PrivateTmp|PrivateDevices|PrivateUsers|RestrictNamespaces|RestrictRealtime|RestrictSUIDSGID|RestrictAddressFamilies|LockPersonality|MemoryDenyWriteExecute|SystemCallFilter|SystemCallArchitectures|DeviceAllow|CapabilityBoundingSet|NoNewPrivileges|AmbientCapabilities|UMask|ProcSubset|User|Group|ProtectClock|ProtectHostname|RefuseManualStop|RefuseManualStart)='
+    /usr/lib/systemd/system/crond.service
+    || true
+  args:
+    executable: /bin/bash
+  register: stock_directive_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report stock unit directive recon"
+  ansible.builtin.debug:
+    msg: >
+      Stock crond.service directives (non-fatal report; the topic
+      assumes a sparse vendor unit. A future package version that adds
+      a sandbox directive overlapping a topic-owned directive may
+      require manifest revision before applying this role):
+      {{ stock_directive_recon.stdout | trim }}.
+
+- name: "preflight | matchpathcon canonical {{ topic_cron_binary_canonical }}"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "{{ topic_cron_binary_canonical }}"
+  register: matchpathcon_canonical
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | matchpathcon pre-merge {{ topic_cron_binary_pre_merge }}"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "{{ topic_cron_binary_pre_merge }}"
+  register: matchpathcon_pre_merge
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast when neither matchpathcon resolves to {{ topic_cron_expected_fcontext }}"
+  ansible.builtin.fail:
+    msg: |
+      Neither matchpathcon path resolved to {{ topic_cron_expected_fcontext }}:
+        {{ topic_cron_binary_canonical }} -> {{ matchpathcon_canonical.stdout | trim }}
+        {{ topic_cron_binary_pre_merge }}  -> {{ matchpathcon_pre_merge.stdout | trim }}
+      The kernel SELinux type-transition init_t -> {{ topic_cron_expected_selinux_domain }} relies
+      on {{ topic_cron_expected_fcontext }} being the canonical-side label. The manifest needs
+      revision before applying this role.
+  when:
+    - (matchpathcon_canonical.stdout | regex_search(topic_cron_expected_fcontext)) is none
+    - (matchpathcon_pre_merge.stdout | regex_search(topic_cron_expected_fcontext)) is none
+
+- name: "preflight | report matchpathcon outcome"
+  ansible.builtin.debug:
+    msg: >
+      matchpathcon canonical={{ matchpathcon_canonical.stdout | trim }};
+      pre-merge={{ matchpathcon_pre_merge.stdout | trim }}.
+
+- name: "preflight | matchpathcon drop-in path"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "{{ topic_cron_dropin_dir }}/99-hardening.conf"
+  register: matchpathcon_dropin
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast when drop-in path does not resolve to crond_unit_file_t"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon {{ topic_cron_dropin_dir }}/99-hardening.conf returned
+      an unexpected mapping: {{ matchpathcon_dropin.stdout | trim }}.
+      Expected: crond_unit_file_t.
+  when:
+    - (matchpathcon_dropin.stdout | regex_search('crond_unit_file_t')) is none
+
+- name: "preflight | SELinux nnp_transition pre-test (rule 1: init_t -> crond_t; expected empty)"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "init_t"
+      - "-t"
+      - "{{ topic_cron_expected_selinux_domain }}"
+      - "-c"
+      - "process2"
+      - "-p"
+      - "nnp_transition"
+  register: nnp_check_rule1
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report SELinux nnp_transition pre-test outcome (rule 1)"
+  ansible.builtin.debug:
+    msg: >
+      SELinux nnp_transition pre-test for
+      init_t -> {{ topic_cron_expected_selinux_domain }}:
+      {{ 'EMPTY (expected; topic CIL rule 1 is required and will be installed)'
+         if (nnp_check_rule1.stdout | trim) == '' else
+         'NON-EMPTY (the rule is already in policy; topic CIL install at '
+         + 'priority 400 is idempotent and overlays without harm)' }}.
+
+- name: "preflight | SELinux nnp_transition pre-test (rule 2: crond_t -> system_cronjob_t; expected empty)"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "{{ topic_cron_expected_selinux_domain }}"
+      - "-t"
+      - "{{ topic_cron_expected_cronjob_domain }}"
+      - "-c"
+      - "process2"
+      - "-p"
+      - "nnp_transition"
+  register: nnp_check_rule2
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report SELinux nnp_transition pre-test outcome (rule 2)"
+  ansible.builtin.debug:
+    msg: >
+      SELinux nnp_transition pre-test for
+      {{ topic_cron_expected_selinux_domain }} ->
+      {{ topic_cron_expected_cronjob_domain }}:
+      {{ 'EMPTY (expected; topic CIL rule 2 is required and will be installed)'
+         if (nnp_check_rule2.stdout | trim) == '' else
+         'NON-EMPTY (the rule is already in policy; topic CIL install at '
+         + 'priority 400 is idempotent and overlays without harm)' }}.
+
+- name: "preflight | stock type-transition recon (informational)"
+  ansible.builtin.shell: >
+    sesearch -T -s {{ topic_cron_expected_selinux_domain }} 2>/dev/null
+    | grep {{ topic_cron_expected_cronjob_domain }} || true
+  args:
+    executable: /bin/bash
+  register: type_transition_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report stock type-transition recon"
+  ansible.builtin.debug:
+    msg: >
+      Stock type-transition for
+      {{ topic_cron_expected_selinux_domain }} ->
+      {{ topic_cron_expected_cronjob_domain }}:
+      {{ (type_transition_recon.stdout | trim) | default('(none observed)', true) }}.
+
+- name: "preflight | pre-hardening Soll-state recon"
+  ansible.builtin.shell: |
+    set +e
+    systemctl is-active crond.service
+    systemctl show crond.service -p MainPID --value
+    journalctl -b 0 -p err -u crond.service --no-pager 2>/dev/null | tail -20
+    journalctl -b 0 -u crond.service --no-pager 2>/dev/null \
+      | grep -iE '(STARTUP|inotify|cron-mailer)' | tail -20
+    exit 0
+  args:
+    executable: /bin/bash
+  register: preflight_recon
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report pre-hardening Soll-state recon"
+  ansible.builtin.debug:
+    msg: >
+      Pre-hardening recon (non-fatal; a non-empty error stream signals a
+      pre-existing crond issue worth investigating before applying this role):
+      {{ preflight_recon.stdout | trim }}.

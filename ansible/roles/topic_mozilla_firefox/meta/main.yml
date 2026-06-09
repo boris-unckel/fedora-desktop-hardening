@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+galaxy_info:
+  role_name: topic_mozilla_firefox
+  description: "Mozilla Firefox as a Flathub-installed system-wide Flatpak ref with a sandbox-override (filesystems=xdg-download;!host;!home;, sockets=wayland;!x11;), per-Firefox-profile VAAPI preference seed, and the Fedora-shipped Firefox RPM tree removed (no system-side artefact, no SELinux module, no drop-in)."
+  license: "MIT"
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Fedora
+      versions:
+        - "44"
+        - "45"
+
+# Deliberately narrower than the four-Foundation set: this role neither writes
+# a system-side config under operator UMASK influence in any place where a
+# non-operator daemon would later need to read it (no Layer 0 reflex), nor
+# ships a CIL module (no Layer 2). Layer 1 is required because every privileged
+# step transits the staff_u -> sysadm_r -> sysadm_t role-switch surface; Layer 3
+# is required because the verify discipline asserts boot-clean AVC posture
+# against the application's process tree.
+dependencies:
+  - role: foundation_sudo_roles
+  - role: foundation_audit_logging_baseline

@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Ansible collections required by the live-test harness.
+# Install on the control node with:
+#   ansible-galaxy collection install -r requirements.yml
+collections:
+  - name: hetzner.hcloud
+    version: ">=4.0.0"
+  - name: community.general
+  - name: ansible.posix

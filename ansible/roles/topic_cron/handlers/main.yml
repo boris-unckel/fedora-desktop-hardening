@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_cron.
+#
+# Two notification channels:
+#   "topic_cron cil changed"    — fires on a change to the CIL source
+#                                  file. Triggers semodule install
+#                                  under sysadm_r.
+#   "topic_cron dropin changed" — fires on a change to any of the three
+#                                  drop-in files. Triggers restorecon,
+#                                  daemon-reload, and a unit restart.
+
+- name: "topic_cron | semodule install nnp_crond"
+  ansible.builtin.command:
+    argv:
+      - semodule
+      - "-X"
+      - "{{ topic_cron_cil_priority | string }}"
+      - "-i"
+      - "{{ topic_cron_cil_dir }}/{{ topic_cron_cil_module_name }}.cil"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_cron cil changed"
+
+- name: "topic_cron | restorecon crond drop-ins"
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-v"
+      - "{{ topic_cron_dropin_dir }}/99-hardening.conf"
+      - "{{ topic_cron_dropin_dir }}/99-nnp.conf"
+      - "{{ topic_cron_dropin_dir }}/99-process-restrict.conf"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_cron dropin changed"
+
+- name: "topic_cron | daemon-reload"
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "topic_cron dropin changed"
+
+- name: "topic_cron | restart crond"
+  ansible.builtin.systemd:
+    name: "crond.service"
+    state: restarted
+  listen: "topic_cron dropin changed"

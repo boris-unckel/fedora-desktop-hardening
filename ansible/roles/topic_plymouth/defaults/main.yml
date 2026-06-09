@@ -1,0 +1,101 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_plymouth. Override in group_vars or playbook.
+
+# Drop-in directory for plymouth-start.service.
+topic_plymouth_dropin_dir: "/etc/systemd/system/plymouth-start.service.d"
+
+# Priority-400 CIL publish directory.
+topic_plymouth_cil_dir: "/usr/local/share/selinux"
+
+# Required package: the daemon binary, the four plymouth-* unit files,
+# the configuration directory under /etc/plymouth/, the theme directory
+# under /usr/share/plymouth/themes/, and the runtime directory layout
+# under /var/lib/plymouth/ and /var/spool/plymouth/.
+topic_plymouth_required_packages:
+  - plymouth
+
+# Topic-owned CIL module name and load priority.
+topic_plymouth_cil_module_name: "nnp_plymouth"
+topic_plymouth_cil_priority: 400
+
+# Stock daemon binary path. The role validates the fcontext mapping for
+# this path with a matchpathcon fail-fast in preflight.
+topic_plymouth_daemon_bin_path: "/usr/bin/plymouthd"
+
+# Expected effective values surfaced from `systemctl show --value`.
+topic_plymouth_expected_selinux_domain: "plymouthd_t"
+topic_plymouth_expected_type: "forking"
+topic_plymouth_expected_active_state: "active"
+topic_plymouth_expected_sub_state: "exited"
+topic_plymouth_expected_result: "success"
+topic_plymouth_expected_nnp: "yes"
+topic_plymouth_expected_protect_system: "strict"
+topic_plymouth_expected_protect_home: "yes"
+topic_plymouth_expected_protect_kernel_tunables: "yes"
+topic_plymouth_expected_protect_kernel_modules: "yes"
+topic_plymouth_expected_protect_kernel_logs: "yes"
+topic_plymouth_expected_protect_control_groups: "yes"
+topic_plymouth_expected_protect_clock: "yes"
+topic_plymouth_expected_protect_hostname: "yes"
+topic_plymouth_expected_private_tmp: "yes"
+topic_plymouth_expected_lock_personality: "yes"
+topic_plymouth_expected_restrict_realtime: "yes"
+topic_plymouth_expected_restrict_suid_sgid: "yes"
+topic_plymouth_expected_restrict_namespaces: "yes"
+topic_plymouth_expected_syscall_architectures: "native"
+topic_plymouth_expected_private_network: "yes"
+topic_plymouth_expected_restrict_address_families: "AF_UNIX"
+topic_plymouth_expected_mdwe: "yes"
+
+# ReadWritePaths substrings asserted in the runtime property output.
+# The leading `-` on -/run/plymouth is consumed at parse time and is
+# not part of the property output, so the verify check asserts the
+# three substrings only.
+topic_plymouth_expected_read_write_paths_substrings:
+  - "/run/plymouth"
+  - "/var/lib/plymouth"
+  - "/var/spool/plymouth"
+
+# At least four of the eight @system-service anchor syscalls must be
+# present in the alphabetical syscall list that systemd surfaces in the
+# expanded SystemCallFilter property output.
+topic_plymouth_expected_syscall_filter_baseline_anchors:
+  - "read"
+  - "write"
+  - "openat"
+  - "close"
+  - "mmap"
+  - "brk"
+  - "exit_group"
+  - "rt_sigaction"
+
+# All twelve class tokens must be present in the merged unit body
+# (read with `systemctl cat`). The property output expands the class
+# form into individual syscalls, so the class form is verified against
+# the cat output rather than the property output.
+topic_plymouth_expected_syscall_filter_class_tokens:
+  - "@system-service"
+  - "~@privileged"
+  - "~@resources"
+  - "~@debug"
+  - "~@mount"
+  - "~@cpu-emulation"
+  - "~@obsolete"
+  - "~@raw-io"
+  - "~@reboot"
+  - "~@swap"
+  - "~@module"
+  - "~@clock"
+
+# Three-set exact match. Presence of any other capability is drift,
+# absence of any of the three is drift.
+topic_plymouth_expected_cap_bounding_set:
+  - "CAP_SYS_ADMIN"
+  - "CAP_SYS_TTY_CONFIG"
+  - "CAP_CHOWN"
+
+# plymouth-quit-wait.service post-boot anchor expected state.
+topic_plymouth_expected_quitwait_active_state: "active"
+topic_plymouth_expected_quitwait_sub_state: "exited"
+topic_plymouth_expected_quitwait_result: "success"

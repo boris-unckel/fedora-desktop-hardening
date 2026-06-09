@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+galaxy_info:
+  role_name: topic_flatpak_collection_id
+  description: "Per-remote flatpak remote-modify --collection-id=<binding> repair on a Pre-1.13-initialized system-wide Flatpak ostree store, plus one trailing flatpak update --appstream refresh (no system-side artefact, no SELinux module, no drop-in, no file-label change)."
+  license: "MIT"
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Fedora
+      versions:
+        - "44"
+        - "45"
+
+# Deliberately narrower than the sibling Flatpak topics' four-Foundation set:
+# this role neither writes a system-side config under operator UMASK influence
+# (no Layer 0 reflex), nor ships a CIL module (no Layer 2), nor performs an
+# AVC-stream assertion (no Layer 3). Every mutating call transits Layer 1's
+# role-switch surface (`sudo -r sysadm_r -t sysadm_t`).
+dependencies:
+  - role: foundation_sudo_roles

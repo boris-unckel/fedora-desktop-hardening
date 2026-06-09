@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for foundation_sudo_roles. Block apply when the host is
+# the wrong family, when the SELinux policy tooling is missing, when the
+# operator user does not exist, or when the shipped CIL module is absent.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      foundation_sudo_roles targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | operator user variable is set"
+  ansible.builtin.assert:
+    that:
+      - foundation_sudo_roles_user is defined
+      - foundation_sudo_roles_user | length > 0
+    fail_msg: >
+      foundation_sudo_roles_user must be set in inventory or playbook vars.
+      The operator account name is host-specific and has no safe default.
+
+- name: "preflight | required SELinux tooling packages present"
+  ansible.builtin.package_facts:
+    manager: rpm
+
+- name: "preflight | policycoreutils-python-utils and selinux-policy-targeted installed"
+  ansible.builtin.assert:
+    that:
+      - "'policycoreutils-python-utils' in ansible_facts.packages"
+      - "'selinux-policy-targeted' in ansible_facts.packages"
+    fail_msg: >
+      Required packages missing. Install with:
+        dnf install policycoreutils-python-utils selinux-policy-targeted
+
+- name: "preflight | operator user exists in /etc/passwd"
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ foundation_sudo_roles_user }}"
+  register: operator_passwd
+  failed_when:
+    - operator_passwd.failed | default(false)
+    - foundation_sudo_roles_user not in (operator_passwd.ansible_facts.getent_passwd | default({}))
+
+- name: "preflight | shipped CIL module file is present in role"
+  ansible.builtin.stat:
+    path: "{{ role_path }}/files/staff_extras.cil"
+  register: cil_source_stat
+  failed_when: not (cil_source_stat.stat.exists | default(false))
+  delegate_to: localhost
+  become: false
+
+- name: "preflight | sudoers file is present and readable"
+  ansible.builtin.stat:
+    path: "/etc/sudoers"
+  register: sudoers_stat
+  failed_when:
+    - not (sudoers_stat.stat.exists | default(false))
+    - sudoers_stat.stat.pw_name | default('') != 'root'
+  become: true

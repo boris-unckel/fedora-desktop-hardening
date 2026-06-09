@@ -1,0 +1,174 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# System-tier verify (post-reboot).
+#
+# Two kinds of check:
+#   1. Persistence gate (hard): every applied topic's verify.sh must exit 0 in
+#      both the staff_t and the sysadm_t context after the real reboot. This is
+#      the cumulative proof that the hardening took effect, survived the boot,
+#      and that no topic's drop-in or CIL module was lost or conflicted with
+#      another's. A non-zero exit fails the run.
+#   2. Security scoring (recorded): the post-hardening systemd-analyze exposure,
+#      OpenSCAP pass ratio, and Lynis hardening index are captured and diffed
+#      against the pre-hardening baseline from prepare.yml. On this first
+#      system-tier run the scores are reported as trend values, not gated, so a
+#      tool quirk cannot mask the boot-survival and persistence result; the
+#      numbers feed the report and the threshold gate can be armed once a
+#      baseline trend exists.
+- name: Verify — post-reboot persistence and security scoring
+  hosts: all
+  gather_facts: false
+  vars:
+    baseline_dir: /root/livetest-baseline
+    system_tier_topics:
+      - topic_kernel_hardening
+      - topic_dbus_broker
+      - topic_network_manager
+      - topic_auditd
+      - topic_plymouth
+      - topic_chronyd
+      - topic_cron
+      - topic_rngd
+      - topic_tuned
+      - topic_udisks2
+      - topic_avahi_daemon
+      - topic_alsa_state
+      - topic_smartd
+      - topic_thermald
+      - topic_flatpak_collection_id
+      - topic_python_pip_user_tree
+      - topic_switcheroo_control
+      - topic_flatpak_audio_sandbox
+      - topic_flatpak_oci_pull_dbus
+    scored_units:
+      - auditd.service
+      - dbus-broker.service
+      - NetworkManager.service
+      - chronyd.service
+      - crond.service
+      - rngd.service
+      - tuned.service
+      - udisks2.service
+      - avahi-daemon.service
+      - smartd.service
+      - thermald.service
+      - alsa-state.service
+      - plymouth-start.service
+  tasks:
+    - name: Confirm the host is in a booted state
+      ansible.builtin.command: systemctl is-system-running
+      register: post_boot_state
+      changed_when: false
+      failed_when: false
+
+    - name: Report post-reboot system state
+      ansible.builtin.debug:
+        msg: "is-system-running = {{ post_boot_state.stdout | trim }}"
+
+    - name: Run each topic verify.sh in the staff_t context
+      ansible.builtin.script: "{{ playbook_dir }}/../../roles/{{ item }}/files/verify.sh"
+      become: false
+      changed_when: false
+      failed_when: false
+      register: verify_staff
+      loop: "{{ system_tier_topics }}"
+
+    - name: Run each topic verify.sh in the sysadm_t context
+      ansible.builtin.script: "{{ playbook_dir }}/../../roles/{{ item }}/files/verify.sh"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      changed_when: false
+      failed_when: false
+      register: verify_sysadm
+      loop: "{{ system_tier_topics }}"
+
+    - name: Summarise per-topic persistence verdicts
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.0.item }}: staff_t rc={{ item.0.rc }}, sysadm_t rc={{ item.1.rc }}
+      loop: "{{ verify_staff.results | zip(verify_sysadm.results) | list }}"
+      loop_control:
+        label: "{{ item.0.item }}"
+
+    # Full per-topic verify.sh output for both contexts. The rc summary above
+    # only says pass/fail; this prints the individual OK/SKIP/FAIL lines so a
+    # drifted check is visible in the run log without re-running anything. It is
+    # emitted before the persistence gate so the detail survives a failing run.
+    - name: Log full per-topic verify.sh output (staff_t)
+      ansible.builtin.debug:
+        msg: "{{ item.item }} (staff_t rc={{ item.rc }}):\n{{ item.stdout | default('') }}"
+      loop: "{{ verify_staff.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Log full per-topic verify.sh output (sysadm_t)
+      ansible.builtin.debug:
+        msg: "{{ item.item }} (sysadm_t rc={{ item.rc }}):\n{{ item.stdout | default('') }}"
+      loop: "{{ verify_sysadm.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # The security-score capture runs BEFORE the persistence gate so a single
+    # drifted topic verify.sh cannot mask the OpenSCAP / Lynis / systemd-analyze
+    # trend for the run. The gate is the last task: it still fails the run, but
+    # only after the scores and the full verify detail are already in the log.
+    - name: Capture and diff the post-hardening security scores
+      become: true
+      # The connection user is staff_u here; plain become (staff_sudo_t) lacks
+      # DAC_OVERRIDE and cannot read the root-owned baseline files under
+      # /root/livetest-baseline. The sysadm_t role switch has the caps.
+      become_flags: "-r sysadm_r -t sysadm_t"
+      ansible.builtin.shell: |
+        set +e
+        bd={{ baseline_dir }}
+        echo "===== systemd-analyze unit exposure (pre -> post; lower is better) ====="
+        for u in {{ scored_units | join(' ') }}; do
+          pre=$(cat "$bd/exposure.$u.pre" 2>/dev/null | tr -d '[:space:]')
+          post=$(systemd-analyze security "$u" --no-pager 2>/dev/null \
+                 | sed -n 's/.*Overall exposure level for[^:]*:[[:space:]]*\([0-9.]*\).*/\1/p' | tr -d '[:space:]')
+          printf '  %-28s %s -> %s\n' "$u" "${pre:-NA}" "${post:-NA}"
+        done
+        echo "===== OpenSCAP (pass/fail; higher pass ratio is better) ====="
+        if [ "$(cat "$bd/scoring_tools_available" 2>/dev/null)" = "yes" ]; then
+          ds=/usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml
+          prof=$(cat "$bd/oscap_profile" 2>/dev/null)
+          oscap xccdf eval --profile "$prof" --results-arf "$bd/oscap-arf.post.xml" "$ds" >/dev/null 2>&1
+          p=$(grep -c '<result>pass</result>' "$bd/oscap-arf.post.xml" 2>/dev/null)
+          f=$(grep -c '<result>fail</result>' "$bd/oscap-arf.post.xml" 2>/dev/null)
+          echo "  pre : $(cat "$bd/oscap.pre.txt" 2>/dev/null)"
+          echo "  post: pass=${p:-0} fail=${f:-0}"
+        else
+          echo "  scoring tools unavailable (IPv6 package egress); OpenSCAP not scored"
+        fi
+        echo "===== Lynis hardening index (higher is better) ====="
+        if [ "$(cat "$bd/scoring_tools_available" 2>/dev/null)" = "yes" ]; then
+          lynis audit system --quick --no-colors >/dev/null 2>&1
+          echo "  pre : $(cat "$bd/lynis.pre.txt" 2>/dev/null)"
+          echo "  post: $(grep '^hardening_index=' /var/log/lynis-report.dat 2>/dev/null)"
+        else
+          echo "  scoring tools unavailable (IPv6 package egress); Lynis not scored"
+        fi
+        exit 0
+      args:
+        executable: /bin/bash
+      register: score_report
+      changed_when: false
+
+    - name: Report the security score comparison (recorded, not gated this run)
+      ansible.builtin.debug:
+        var: score_report.stdout_lines
+
+    - name: Persistence gate — every topic verify.sh exits 0 in both contexts
+      # Last task in the play, by design: the scores and the full per-topic
+      # verify detail above are captured first, so a single drifted topic does
+      # not cost the run its security-trend record. This assert is still the
+      # hard gate — a non-zero rc in either context fails the run.
+      ansible.builtin.assert:
+        that:
+          - (verify_staff.results | selectattr('rc', 'ne', 0) | list | length) == 0
+          - (verify_sysadm.results | selectattr('rc', 'ne', 0) | list | length) == 0
+        success_msg: "post-reboot persistence OK: all {{ system_tier_topics | length }} topics clean in both contexts"
+        fail_msg: >-
+          post-reboot persistence FAILED.
+          staff_t failures: {{ verify_staff.results | selectattr('rc', 'ne', 0) | map(attribute='item') | list }};
+          sysadm_t failures: {{ verify_sysadm.results | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}

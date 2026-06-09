@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: foundation_audit_logging_baseline
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes (re-applying does not change state on a correctly
+# configured host; see README.md "Idempotence notes").
+#
+# Layer 3 of the Foundation tier; depends on foundation_umask (Layer 0)
+# and foundation_sudo_roles (Layer 1). The role pushes no audit rule
+# fragment, no auditd.conf, and no journald.conf.d drop-in. Modify steps
+# are package presence, persistent-journal-directory presence, and a
+# read-only live-state probe under sysadm_t.
+
+- name: "foundation_audit_logging_baseline | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - foundation_audit_logging_baseline
+    - preflight
+
+- name: "foundation_audit_logging_baseline | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - foundation_audit_logging_baseline
+    - probe
+
+- name: "foundation_audit_logging_baseline | apply configuration"
+  block:
+
+    - name: "foundation_audit_logging_baseline | required packages present"
+      ansible.builtin.dnf:
+        name: "{{ foundation_audit_logging_baseline_required_packages }}"
+        state: present
+      become: true
+
+    - name: "foundation_audit_logging_baseline | persistent-journal directory present"
+      ansible.builtin.file:
+        path: "{{ foundation_audit_logging_baseline_persistent_journal_dir }}"
+        state: directory
+        owner: root
+        group: "{{ foundation_audit_logging_baseline_persistent_journal_dir_group }}"
+        mode: "{{ foundation_audit_logging_baseline_persistent_journal_dir_mode }}"
+      become: true
+
+    - name: "foundation_audit_logging_baseline | read live audit state (auditctl -s)"
+      ansible.builtin.command:
+        argv:
+          - auditctl
+          - "-s"
+      register: live_audit_state
+      changed_when: false
+      failed_when: false
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "foundation_audit_logging_baseline | report live audit state"
+      ansible.builtin.debug:
+        msg: >
+          auditctl -s rc={{ live_audit_state.rc }}.
+          The role does not flip audit state; rule loads belong to per-Topic
+          roles via augenrules --load.
+
+    - name: "foundation_audit_logging_baseline | read live journald Storage="
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - "show"
+          - "systemd-journald"
+          - "--property=Storage"
+          - "--value"
+      register: live_journald_storage
+      changed_when: false
+
+    - name: "foundation_audit_logging_baseline | report live journald Storage="
+      ansible.builtin.debug:
+        msg: >
+          systemd-journald Storage={{ live_journald_storage.stdout | trim }}.
+          With the persistent-journal directory present, Storage=auto flips
+          to persistent on the next daemon read of the directory.
+
+  rescue:
+
+    - name: "foundation_audit_logging_baseline | apply failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          foundation_audit_logging_baseline apply step failed. Auto-rollback
+          is intentionally not performed; the role's modify stage is
+          confined to package presence and persistent-journal-directory
+          presence, neither of which warrants automated reversal.
+
+          Manual recovery options:
+
+            1. Inspect dnf transaction history:
+                 sudo dnf history
+
+            2. Check the persistent-journal directory:
+                 ls -ldZ /var/log/journal
+
+            3. Inspect journald posture:
+                 systemctl show systemd-journald --property=Storage --value
+
+            4. Inspect audit subsystem from sysadm_t:
+                 sudo -r sysadm_r -t sysadm_t auditctl -s
+
+  tags:
+    - foundation_audit_logging_baseline
+    - apply
+
+- name: "foundation_audit_logging_baseline | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - foundation_audit_logging_baseline
+    - verify

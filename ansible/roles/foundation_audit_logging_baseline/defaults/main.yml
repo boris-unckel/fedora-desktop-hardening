@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for foundation_audit_logging_baseline. Override in group_vars or
+# playbook.
+
+# Required packages: the audit pipeline and the SELinux audit-diagnosis
+# tooling (audit2why, audit2allow ship from policycoreutils-python-utils).
+foundation_audit_logging_baseline_required_packages:
+  - audit
+  - audit-libs
+  - audit-rules
+  - policycoreutils-python-utils
+
+# Persistent-journal directory. Presence flips Storage=auto from volatile
+# to persistent. The role ensures presence and the package-default mode
+# and ownership; it does not push journald.conf.d content.
+foundation_audit_logging_baseline_persistent_journal_dir: "/var/log/journal"
+foundation_audit_logging_baseline_persistent_journal_dir_mode: "2755"
+foundation_audit_logging_baseline_persistent_journal_dir_group: "systemd-journal"

@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_dbus_broker. Override in group_vars or playbook.
+
+# Drop-in directory for dbus-broker.service.
+topic_dbus_broker_dropin_dir: "/etc/systemd/system/dbus-broker.service.d"
+
+# Priority-400 CIL publish directory.
+topic_dbus_broker_cil_dir: "/usr/local/share/selinux"
+
+# Required package: the broker, the launcher wrapper, the unit file.
+topic_dbus_broker_required_packages:
+  - dbus-broker
+
+# Topic-owned CIL module name and load priority.
+topic_dbus_broker_cil_module_name: "nnp_dbus_broker"
+topic_dbus_broker_cil_priority: 400
+
+# Expected effective values surfaced from `systemctl show --value`.
+topic_dbus_broker_expected_selinux_domain: "system_dbusd_t"
+topic_dbus_broker_expected_nnp: "yes"
+topic_dbus_broker_expected_protect_clock: "yes"
+topic_dbus_broker_expected_protect_kernel_logs: "yes"
+topic_dbus_broker_expected_protect_kernel_modules: "yes"
+topic_dbus_broker_expected_protect_control_groups: "yes"
+topic_dbus_broker_expected_syscall_architectures: "native"
+topic_dbus_broker_expected_mdwe: "yes"

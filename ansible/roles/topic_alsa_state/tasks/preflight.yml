@@ -1,0 +1,155 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_alsa_state. Block apply when the host
+# family is wrong, when the alsa-state vendor unit is missing, when the
+# alsa-utils package is not installed, or when matchpathcon for either
+# /usr/bin/alsactl or /usr/sbin/alsactl returns a bin_t mapping (F44
+# sbin/bin-merge has displaced the stock fcontext mapping; manifest
+# revision required). Stock-policy nnp_transition pre-test, stock-unit
+# directive recon, and the saved-state file capture are non-fatal
+# reports stored as facts for post-deploy comparison.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_alsa_state targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | alsa-state.service vendor unit present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/alsa-state.service"
+  register: vendor_unit
+  failed_when: not (vendor_unit.stat.exists | default(false))
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_alsa_state_required_packages }}"
+
+- name: "preflight | stock unit sparse-baseline recon"
+  ansible.builtin.shell: >
+    grep -E
+    '^(Type|ExecStart|EnvironmentFile|Condition|RuntimeDirectory|StateDirectory|ConfigurationDirectory|LogsDirectory|ProtectSystem|SystemCallFilter|MemoryDenyWriteExecute|RestrictNamespaces|RestrictAddressFamilies|DeviceAllow|User|Group)='
+    /usr/lib/systemd/system/alsa-state.service
+    || true
+  args:
+    executable: /bin/bash
+  register: stock_directive_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report stock unit directive recon"
+  ansible.builtin.debug:
+    msg: >
+      Stock alsa-state.service directives (non-fatal report; the topic
+      assumes a sparse vendor unit with the ExecStart= leading-dash form.
+      A future package version that adds a sandbox directive may require
+      manifest revision before applying this role):
+      {{ stock_directive_recon.stdout | trim }}.
+
+- name: "preflight | matchpathcon {{ topic_alsa_state_binary_bin_path }}"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "{{ topic_alsa_state_binary_bin_path }}"
+  register: matchpathcon_bin_check
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | matchpathcon {{ topic_alsa_state_binary_sbin_path }}"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "{{ topic_alsa_state_binary_sbin_path }}"
+  register: matchpathcon_sbin_check
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast if matchpathcon /usr/bin/alsactl returns bin_t"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon {{ topic_alsa_state_binary_bin_path }} returned a bin_t mapping:
+      {{ matchpathcon_bin_check.stdout | trim }}
+      F44 sbin/bin-merge has displaced the stock {{ topic_alsa_state_expected_fcontext }}
+      mapping. The manifest needs revision to add a
+      community.general.sefcontext mitigation task and an
+      f44-sbin-bin-merge cross-link in the topic Reference. Open a
+      fresh topic session against an extended manifest before applying
+      this role.
+  when:
+    - (matchpathcon_bin_check.stdout | regex_search('bin_t')) is not none
+    - (matchpathcon_bin_check.stdout | regex_search(topic_alsa_state_expected_fcontext)) is none
+
+- name: "preflight | fail-fast if matchpathcon /usr/sbin/alsactl returns bin_t"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon {{ topic_alsa_state_binary_sbin_path }} returned a bin_t mapping:
+      {{ matchpathcon_sbin_check.stdout | trim }}
+      F44 sbin/bin-merge has displaced the stock {{ topic_alsa_state_expected_fcontext }}
+      mapping for the sbin path. Manifest revision required.
+  when:
+    - (matchpathcon_sbin_check.stdout | regex_search('bin_t')) is not none
+    - (matchpathcon_sbin_check.stdout | regex_search(topic_alsa_state_expected_fcontext)) is none
+
+- name: "preflight | report matchpathcon outcome"
+  ansible.builtin.debug:
+    msg: >
+      matchpathcon {{ topic_alsa_state_binary_bin_path }}: {{ matchpathcon_bin_check.stdout | trim }};
+      matchpathcon {{ topic_alsa_state_binary_sbin_path }}: {{ matchpathcon_sbin_check.stdout | trim }}.
+
+- name: "preflight | SELinux nnp_transition pre-test (expected empty)"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "init_t"
+      - "-t"
+      - "{{ topic_alsa_state_expected_selinux_domain }}"
+      - "-c"
+      - "process2"
+      - "-p"
+      - "nnp_transition"
+  register: nnp_check
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report SELinux nnp_transition pre-test outcome"
+  ansible.builtin.debug:
+    msg: >
+      SELinux nnp_transition pre-test for
+      init_t -> {{ topic_alsa_state_expected_selinux_domain }}:
+      {{ 'EMPTY (expected; topic CIL is required and will be installed)'
+         if (nnp_check.stdout | trim) == '' else
+         'NON-EMPTY (the rule is already in policy; topic CIL install at '
+         + 'priority 400 is idempotent and overlays without harm)' }}.
+
+- name: "preflight | saved-state file recon"
+  ansible.builtin.shell: >
+    stat -c '%n: %s bytes, mtime=%y' {{ topic_alsa_state_state_file }} || true
+  args:
+    executable: /bin/bash
+  register: preflight_state_file_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report saved-state file recon"
+  ansible.builtin.debug:
+    msg: >
+      Pre-deploy saved-state file snapshot:
+      {{ (preflight_state_file_recon.stdout | trim) | default('(unreadable)', true) }}.
+      A missing or zero-byte state file at deploy time signals that the
+      package's first-install hook did not populate it; the post-deploy
+      smoketest will surface this as drift.

@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_auditd. Override in group_vars or playbook.
+
+# Drop-in directory for auditd.service.
+topic_auditd_dropin_dir: "/etc/systemd/system/auditd.service.d"
+
+# Priority-400 CIL publish directory.
+topic_auditd_cil_dir: "/usr/local/share/selinux"
+
+# Required package: the daemon, the audit-rules unit, the user-space
+# tooling (auditctl, ausearch, ...).
+topic_auditd_required_packages:
+  - audit
+
+# Topic-owned CIL module name and load priority.
+topic_auditd_cil_module_name: "nnp_auditd"
+topic_auditd_cil_priority: 400
+
+# Expected effective values surfaced from `systemctl show --value`.
+topic_auditd_expected_selinux_domain: "auditd_t"
+topic_auditd_expected_nnp: "yes"
+topic_auditd_expected_protect_clock: "yes"
+topic_auditd_expected_protect_kernel_modules: "yes"
+topic_auditd_expected_protect_control_groups: "yes"
+topic_auditd_expected_syscall_architectures: "native"
+topic_auditd_expected_restrict_namespaces: "yes"
+topic_auditd_expected_private_devices: "yes"

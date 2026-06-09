@@ -1,0 +1,78 @@
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+;; staff_extras.cil — staff_u confinement gaps for daily desktop use
+;;
+;; Priority-400 CIL module loaded on top of stock SELinux targeted policy.
+;; Each cluster fills an allow-gap that surfaces only when the operator
+;; account is mapped to staff_u; the rules are no-ops on hosts where the
+;; operator runs as unconfined_u.
+;;
+;; Installation:
+;;   semodule -X 400 -i /usr/local/share/selinux/staff_extras.cil
+;;
+;; Removal:
+;;   semodule -X 400 -r staff_extras
+
+;; Cluster 1: udmabuf (/dev/udmabuf)
+;; Required by Pipewire/wireplumber, GStreamer plugin scan, GNOME Character
+;; Map, Ptyxis terminal, and Wine subprocesses for shared-buffer interop.
+(allow staff_t dma_device_t (chr_file (read write open getattr ioctl)))
+(allow staff_wine_t dma_device_t (chr_file (read write open getattr ioctl)))
+
+;; Cluster 2: userfaultfd anon_inode
+;; Wine memory-fault handling. The first rule covers create/read/write on
+;; the anon-inode; the trailing ioctl rule (kept at the end of the file as
+;; a separate allow line for diff readability) covers the UFFDIO_API
+;; handshake that Wine performs after the inode is established.
+(allow staff_wine_t userfaultfd_t (anon_inode (create read write)))
+
+;; Cluster 3: Wine devices
+;; Joystick character device (/dev/input/js0) is opened unconditionally by
+;; the Win32 input enumeration. Session DBus socket (/run/user/<uid>/bus)
+;; is opened for desktop-integration calls (theming, tray, portals).
+(allow staff_wine_t mouse_device_t (chr_file (read write open getattr ioctl)))
+(allow staff_wine_t session_dbusd_tmp_t (sock_file (write open getattr)))
+
+;; Cluster 4: Flatpak/bwrap sandbox construction
+;; This cluster is documented in a separate User-Applications topic; it has
+;; no relationship to the sudo or role-transition surface and is included
+;; here only because the policy module is one CIL unit at the policy-store
+;; level.
+
+;; 4a — mounton targets (container bind-mount points)
+(allow staff_t var_lib_t (dir (mounton)))
+(allow staff_t var_lib_t (file (mounton)))
+(allow staff_t user_home_t (file (mounton)))
+(allow staff_t config_home_t (dir (mounton)))
+(allow staff_t data_home_t (dir (mounton)))
+(allow staff_t tmpfs_t (dir (mounton)))
+
+;; 4b — fs remount with MS_RDONLY/MS_NOSUID flags after bind mount
+(allow staff_t binfmt_misc_fs_t (filesystem (remount)))
+(allow staff_t bpf_t (filesystem (remount)))
+(allow staff_t cgroup_t (filesystem (remount)))
+(allow staff_t configfs_t (filesystem (remount)))
+(allow staff_t debugfs_t (filesystem (remount)))
+(allow staff_t device_t (filesystem (remount)))
+(allow staff_t devpts_t (filesystem (remount)))
+(allow staff_t dosfs_t (filesystem (remount)))
+(allow staff_t efivarfs_t (filesystem (remount)))
+(allow staff_t fusefs_t (filesystem (remount)))
+(allow staff_t hugetlbfs_t (filesystem (remount)))
+(allow staff_t nsfs_t (filesystem (remount)))
+(allow staff_t proc_t (filesystem (remount)))
+(allow staff_t pstore_t (filesystem (remount)))
+(allow staff_t security_t (filesystem (remount)))
+(allow staff_t sysfs_t (filesystem (remount)))
+(allow staff_t tmpfs_t (filesystem (remount)))
+(allow staff_t tracefs_t (filesystem (remount)))
+
+;; 4c — Flatpak runtime binaries under /var/lib/flatpak (ldconfig + app)
+(allow staff_t var_lib_t (file (execute execute_no_trans open read getattr ioctl lock map)))
+
+;; 4d — bwrap-internal sysctl write (oom_score_adj; CAP_SYS_ADMIN gated)
+(allow staff_t sysctl_t (file (write)))
+
+;; Cluster 2 follow-up: ioctl(UFFDIO_API,...) for the Wine userfaultfd
+;; handshake. Kept at the file tail as a separate allow line so the addition
+;; remains visible in module diffs.
+(allow staff_wine_t userfaultfd_t (anon_inode (ioctl)))

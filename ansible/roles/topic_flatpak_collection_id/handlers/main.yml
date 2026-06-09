@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Handlers for topic_flatpak_collection_id.
+#
+# This role ships no handlers. The conditional AppStream refresh is encoded
+# as a regular task in tasks/main.yml with a `when:` clause consulting the
+# registered fact `__topic_flatpak_collection_id_any_changed`, NOT via an
+# Ansible handler — handlers fire after the entire play and would defer the
+# AppStream refresh past any subsequent task that needs it. There is no
+# daemon-reload (no system-side unit changes), no restorecon (no labels
+# altered), no system-bus restart (no system-bus dbus-broker action), and
+# no CIL-module install. The file is present for skeleton consistency.

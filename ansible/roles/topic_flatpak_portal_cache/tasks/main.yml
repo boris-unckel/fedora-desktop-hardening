@@ -1,0 +1,86 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_flatpak_portal_cache
+# Pattern: Preflight -> Pre-reset snapshot -> Reset -> Post-reset verify
+# Idempotent: NO (deliberate). The user-bus restart of
+# xdg-document-portal.service is re-issued on every Ansible run; the role
+# is post-override-applicable and the restart is the role's primary
+# deliverable. See README.md "Idempotence notes" for the design rationale.
+#
+# Modify ordering invariant:
+#   1. Preflight: OS family, package presence, GTK/GNOME backend slot
+#      disposition, operator-mapping note, user-systemd addressability,
+#      pre-reset cache snapshot (persistent + FUSE by-app), override-store
+#      inventory under sysadm_t.
+#   2. Probe (read-only): files/probe.sh.
+#   3. Reset action: ansible.builtin.systemd_service with scope: user,
+#      name: xdg-document-portal.service, state: restarted, run as
+#      become_user: <invoking-operator>. NO sudo escalation; the
+#      portal-service is per-user and restartable from the operator's
+#      own user-bus session.
+#   4. Post-reset verify: files/verify.sh asserts user-systemd active
+#      state, FUSE-by-app per-application token count zero across all
+#      <appid>, and flatpak documents list line count zero.
+#
+# No drop-in push step. No CIL-module install. No daemon-reload. No
+# restorecon. No semanage fcontext. No system-bus systemctl restart. No
+# flatpak override invocation from inside the role.
+
+- name: "topic_flatpak_portal_cache | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_flatpak_portal_cache
+    - preflight
+
+- name: "topic_flatpak_portal_cache | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  tags:
+    - topic_flatpak_portal_cache
+    - probe
+
+- name: "topic_flatpak_portal_cache | apply configuration"
+  block:
+
+    - name: "topic_flatpak_portal_cache | restart user xdg-document-portal.service"
+      ansible.builtin.systemd_service:
+        name: "{{ topic_flatpak_portal_cache_portal_service_name }}"
+        scope: user
+        state: restarted
+
+    - name: "topic_flatpak_portal_cache | report end-state"
+      ansible.builtin.debug:
+        msg: |
+          flatpak-portal-cache reset issued against the operator's
+          user-systemd instance for unit
+          '{{ topic_flatpak_portal_cache_portal_service_name }}'. The
+          per-user FUSE filesystem under
+          /run/user/{{ ansible_user_uid }}/doc/by-app/ is now empty (or
+          absent until the next D-Bus method call from a Flatpak
+          application).
+
+  rescue:
+
+    - name: "topic_flatpak_portal_cache | reset failed; do not auto-rollback"
+      ansible.builtin.fail:
+        msg: |
+          topic_flatpak_portal_cache reset step failed. Auto-rollback is
+          not defined for this Topic — the reset action is itself a
+          recovery primitive and re-running the role re-flushes the cache
+          to the same end-state. Boot-failure risk is structurally zero
+          (per-user user-systemd unit, not active during system boot).
+
+  tags:
+    - topic_flatpak_portal_cache
+    - apply
+
+- name: "topic_flatpak_portal_cache | verify (Soll/Ist)"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  failed_when: verify_result.rc != 0
+  tags:
+    - topic_flatpak_portal_cache
+    - verify

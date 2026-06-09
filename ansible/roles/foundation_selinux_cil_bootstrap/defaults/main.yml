@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for foundation_selinux_cil_bootstrap. Override in group_vars or
+# playbook.
+
+# Custom-CIL source directory. Distribution default; the role ensures
+# presence and mode but does not relabel.
+foundation_selinux_cil_bootstrap_directory: "/usr/local/share/selinux"
+foundation_selinux_cil_bootstrap_directory_mode: "0755"
+
+# Required tooling packages. policycoreutils-python-utils provides semanage
+# and audit2allow; selinux-policy-targeted provides the targeted policy.
+foundation_selinux_cil_bootstrap_required_packages:
+  - policycoreutils-python-utils
+  - selinux-policy-targeted
+
+# Priority for every custom CIL module shipped by any role in this tree.
+# Hardcoded as a project convention; future roles read this value but
+# do not override it.
+foundation_selinux_cil_bootstrap_priority: 400

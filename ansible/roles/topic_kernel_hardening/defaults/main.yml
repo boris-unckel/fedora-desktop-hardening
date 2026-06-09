@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_kernel_hardening. Override in group_vars or playbook.
+
+# Configuration drop-in directories.
+topic_kernel_hardening_sysctl_dir: "/etc/sysctl.d"
+topic_kernel_hardening_modprobe_dir: "/etc/modprobe.d"
+topic_kernel_hardening_limits_dir: "/etc/security/limits.d"
+topic_kernel_hardening_coredump_dir: "/etc/systemd/coredump.conf.d"
+
+# Operator-populated list of network interfaces that need a per-interface
+# strict-mode + martian-logging stanza appended to 99-hardening.conf. The
+# kernel evaluates net.ipv4.conf.<iface>.rp_filter as max(all, iface) and
+# net.ipv4.conf.<iface>.log_martians is per-interface only, so the
+# all/default tables are not sufficient on existing interfaces. Default
+# is the empty list (no per-interface stanza emitted).
+topic_kernel_hardening_strict_interfaces: []
+
+# Bootloader argument set applied via grubby --update-kernel=ALL --args.
+topic_kernel_hardening_cmdline_args: "slab_nomerge init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 randomize_kstack_offset=on"
+
+# Substrings asserted in /proc/cmdline and grubby --info=ALL output.
+topic_kernel_hardening_expected_cmdline_substrings:
+  - "slab_nomerge"
+  - "init_on_alloc=1"
+  - "init_on_free=1"
+  - "page_alloc.shuffle=1"
+  - "randomize_kstack_offset=on"
+
+# Modules neutralised by `install <mod> /bin/true` in hardening.conf.
+topic_kernel_hardening_blacklisted_modules:
+  - "cramfs"
+  - "freevxfs"
+  - "jffs2"
+  - "hfs"
+  - "hfsplus"
+  - "udf"
+  - "dccp"
+  - "sctp"
+  - "rds"
+  - "tipc"
+  - "firewire-core"
+  - "firewire-ohci"
+  - "firewire-sbp2"
+
+# Sysctl key/value pairs asserted by verify.sh. Five SELinux-restricted
+# keys (kernel.kptr_restrict, net.core.bpf_jit_harden, fs.protected_fifos,
+# fs.protected_regular, dev.tty.ldisc_autoload) are read via the role-
+# switched form; the other fourteen read directly from staff_t.
+topic_kernel_hardening_expected_sysctl_keys:
+  "kernel.kptr_restrict": "2"
+  "kernel.dmesg_restrict": "1"
+  "kernel.yama.ptrace_scope": "1"
+  "kernel.kexec_load_disabled": "1"
+  "kernel.sysrq": "0"
+  "net.ipv4.conf.all.rp_filter": "1"
+  "net.ipv4.conf.default.rp_filter": "1"
+  "net.ipv4.conf.all.accept_redirects": "0"
+  "net.ipv4.conf.default.accept_redirects": "0"
+  "net.ipv6.conf.all.accept_redirects": "0"
+  "net.ipv6.conf.default.accept_redirects": "0"
+  "net.ipv4.conf.all.send_redirects": "0"
+  "net.ipv4.conf.default.send_redirects": "0"
+  "net.ipv4.conf.all.log_martians": "1"
+  "net.ipv4.conf.default.log_martians": "1"
+  "fs.suid_dumpable": "0"
+  "fs.protected_fifos": "2"
+  "fs.protected_regular": "2"
+  "dev.tty.ldisc_autoload": "0"
+  "net.core.bpf_jit_harden": "2"
+
+# SELinux-restricted-on-read sysctl keys. From a staff_t shell the per-key
+# readback for these reports SKIP needs sysadm_t.
+topic_kernel_hardening_selinux_restricted_keys:
+  - "kernel.kptr_restrict"
+  - "net.core.bpf_jit_harden"
+  - "fs.protected_fifos"
+  - "fs.protected_regular"
+  - "dev.tty.ldisc_autoload"
+
+# Expected file modes / labels per shipping artefact.
+topic_kernel_hardening_expected_file_modes:
+  "/etc/sysctl.d/99-hardening.conf":
+    mode: "0644"
+    owner: "root"
+    group: "root"
+    seltype: "system_conf_t"
+  "/etc/modprobe.d/hardening.conf":
+    mode: "0644"
+    owner: "root"
+    group: "root"
+    seltype: "modules_conf_t"
+  "/etc/security/limits.d/90-nocore.conf":
+    mode: "0644"
+    owner: "root"
+    group: "root"
+    seltype: "etc_t"
+  "/etc/systemd/coredump.conf.d/disable.conf":
+    mode: "0644"
+    owner: "root"
+    group: "root"
+    seltype: "systemd_conf_t"
+
+# PAM-limits and systemd-coredump expected values.
+topic_kernel_hardening_expected_nocore_hard: "0"
+topic_kernel_hardening_expected_nocore_soft: "0"
+topic_kernel_hardening_expected_coredump_storage: "none"
+topic_kernel_hardening_expected_coredump_processsizemax: "0"
+topic_kernel_hardening_expected_ulimit_core: "0"

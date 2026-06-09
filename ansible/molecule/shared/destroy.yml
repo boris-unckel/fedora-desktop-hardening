@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Shared delegated-driver destroy. Removes every server the scenario created
+# and empties the instance config. Runs on normal completion and on abort, so
+# a failed run leaves no billable host behind.
+- name: Destroy
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Remove each server
+      hetzner.hcloud.hcloud_server:
+        name: "{{ item.name }}"
+        state: absent
+      loop: "{{ molecule_yml.platforms }}"
+
+    - name: Empty the instance config
+      ansible.builtin.copy:
+        content: "[]"
+        dest: "{{ molecule_ephemeral_directory }}/instance_config.yml"
+        mode: "0600"
+      when: molecule_ephemeral_directory is defined

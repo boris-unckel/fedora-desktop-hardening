@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Tunables for topic_udisks2. Override in group_vars or playbook.
+
+# Drop-in directory for udisks2.service.
+topic_udisks2_dropin_dir: "/etc/systemd/system/udisks2.service.d"
+
+# Required package: the daemon itself.
+topic_udisks2_required_packages:
+  - udisks2
+
+# Optional sub-packages. The role does not install or remove these; the
+# preflight stage reports their presence as inventory.
+topic_udisks2_optional_packages:
+  - udisks2-iscsi
+  - udisks2-lvm2
+  - udisks2-btrfs
+
+# Expected effective values surfaced from `systemctl show --value`.
+# CapabilityBoundingSet is alphabetical, lower-case, single-space-separated.
+# RestrictAddressFamilies preserves the source order of the drop-in.
+topic_udisks2_expected_caps: "cap_sys_admin cap_sys_rawio"
+topic_udisks2_expected_address_families: "AF_UNIX AF_NETLINK"
+topic_udisks2_expected_selinux_domain: "devicekit_disk_t"

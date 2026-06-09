@@ -1,0 +1,157 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Preflight checks for topic_chronyd. Block apply when the host family
+# is wrong, when the chronyd vendor unit is missing, when the chrony
+# package is not installed, when matchpathcon for /usr/sbin/chronyd
+# returns a bin_t mapping (F44 sbin/bin-merge has displaced the stock
+# fcontext mapping; manifest revision required), when stock targeted
+# policy has already upstreamed the init_t -> chronyd_t : process2
+# nnp_transition rule (the topic CIL becomes idempotent overlay; non-
+# fatal report). The pre-deploy NTS-client-only sanity baseline and
+# the chronyc tracking baseline are captured as facts for post-deploy
+# comparison.
+
+- name: "preflight | OS family check"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution == 'Fedora'
+      - ansible_facts.distribution_major_version | int >= 44
+    fail_msg: >
+      topic_chronyd targets Fedora 44 or later. Detected:
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_major_version }}.
+
+- name: "preflight | chronyd.service vendor unit present"
+  ansible.builtin.stat:
+    path: "/usr/lib/systemd/system/chronyd.service"
+  register: vendor_unit
+  failed_when: not (vendor_unit.stat.exists | default(false))
+
+- name: "preflight | required package present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - "-q"
+      - "{{ item }}"
+  register: req_pkg_check
+  changed_when: false
+  failed_when: req_pkg_check.rc != 0
+  loop: "{{ topic_chronyd_required_packages }}"
+
+- name: "preflight | stock unit best-in-class directive recon"
+  ansible.builtin.shell: >
+    grep -E
+    '^(RuntimeDirectory|StateDirectory|ConfigurationDirectory|LogsDirectory|ProtectSystem|SystemCallFilter|MemoryDenyWriteExecute|RestrictNamespaces|RestrictAddressFamilies|DeviceAllow)='
+    /usr/lib/systemd/system/chronyd.service
+    || true
+  args:
+    executable: /bin/bash
+  register: stock_directive_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report stock unit directive recon"
+  ansible.builtin.debug:
+    msg: >
+      Stock chronyd.service best-in-class directives (non-fatal report;
+      a future package version that drops one of these requires manifest
+      revision before applying this role):
+      {{ stock_directive_recon.stdout | trim }}.
+
+- name: "preflight | matchpathcon /usr/sbin/chronyd"
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - "/usr/sbin/chronyd"
+  register: matchpathcon_check
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | fail-fast if matchpathcon returns bin_t"
+  ansible.builtin.fail:
+    msg: |
+      matchpathcon /usr/sbin/chronyd returned a bin_t mapping:
+      {{ matchpathcon_check.stdout | trim }}
+      F44 sbin/bin-merge has displaced the stock chronyd_exec_t
+      mapping. The manifest needs revision to add a
+      community.general.sefcontext mitigation task and an
+      f44-sbin-bin-merge cross-link in the topic Reference. Open a
+      fresh topic session against an extended manifest before applying
+      this role.
+  when: (matchpathcon_check.stdout | regex_search('bin_t')) is not none and (matchpathcon_check.stdout | regex_search('chronyd_exec_t')) is none
+
+- name: "preflight | report matchpathcon outcome"
+  ansible.builtin.debug:
+    msg: >
+      matchpathcon /usr/sbin/chronyd: {{ matchpathcon_check.stdout | trim }}.
+
+- name: "preflight | SELinux nnp_transition pre-test (expected empty)"
+  ansible.builtin.command:
+    argv:
+      - sesearch
+      - "-A"
+      - "-s"
+      - "init_t"
+      - "-t"
+      - "{{ topic_chronyd_expected_selinux_domain }}"
+      - "-c"
+      - "process2"
+      - "-p"
+      - "nnp_transition"
+  register: nnp_check
+  changed_when: false
+  failed_when: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+
+- name: "preflight | report SELinux nnp_transition pre-test outcome"
+  ansible.builtin.debug:
+    msg: >
+      SELinux nnp_transition pre-test for
+      init_t -> {{ topic_chronyd_expected_selinux_domain }}:
+      {{ 'EMPTY (expected; topic CIL is required and will be installed)'
+         if (nnp_check.stdout | trim) == '' else
+         'NON-EMPTY (the rule is already in policy; topic CIL install at '
+         + 'priority 400 is idempotent and overlays without harm)' }}.
+
+- name: "preflight | NTS-client-only port-bind recon"
+  ansible.builtin.shell: >
+    ss -lnu | grep ':123' || true
+  args:
+    executable: /bin/bash
+  register: preflight_port_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | NTS-client-only chrony.conf recon"
+  ansible.builtin.shell: >
+    grep -E '^(allow|deny|bindcmdaddress|port )' /etc/chrony.conf || true
+  args:
+    executable: /bin/bash
+  register: preflight_conf_recon
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report NTS-client-only sanity baseline"
+  ansible.builtin.debug:
+    msg: >
+      NTS-client-only sanity baseline (non-fatal report; a non-empty
+      result signals a server-mode chrony configuration and the four-
+      capability drop in 99-hardening.conf will break server-mode
+      features): port-123 bind={{ (preflight_port_recon.stdout | trim) | default('(none)', true) }};
+      chrony.conf server-mode entries={{ (preflight_conf_recon.stdout | trim) | default('(none)', true) }}.
+
+- name: "preflight | chronyc tracking baseline capture"
+  ansible.builtin.command:
+    argv:
+      - chronyc
+      - "tracking"
+  register: preflight_tracking_baseline
+  changed_when: false
+  failed_when: false
+
+- name: "preflight | report chronyc tracking baseline"
+  ansible.builtin.debug:
+    msg: >
+      Pre-deploy chronyc tracking baseline (rc={{ preflight_tracking_baseline.rc }}):
+      {{ preflight_tracking_baseline.stdout | trim }}.

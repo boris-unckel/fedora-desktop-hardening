@@ -1,0 +1,17 @@
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+;; staff_wayland_memfd.cil — patches one stock-policy gap on Fedora 44
+;; that affects the desktop Wayland compositor running in the staff_t
+;; domain under the confined SELinux user staff_u.
+;;
+;; Functional rule: the compositor maps a Wayland client's shared-memory
+;; (wl_shm) buffer — an anonymous memfd labelled tmpfs_t — with the
+;; protection flags PROT_READ|PROT_WRITE. SELinux translates the
+;; PROT_WRITE flag into a file:write check and the mmap call itself into
+;; a file:map check; file:read is already granted to staff_t on tmpfs_t
+;; files by stock policy. Stock policy grants neither write nor map to
+;; staff_t on tmpfs_t files: write is absent entirely, and the stock map
+;; allow (carried on the domain attribute) is gated by the
+;; domain_can_mmap_files boolean, which is off by default. Without both
+;; permissions the compositor's buffer-attach mmap fails and the client's
+;; Wayland connection aborts with a fatal protocol error.
+(allow staff_t tmpfs_t (file (write map)))

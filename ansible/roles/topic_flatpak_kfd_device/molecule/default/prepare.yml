@@ -1,0 +1,6 @@
+---
+# Component prepare: establish the substrate and the foundation tier. The
+# shared play installs SELinux tooling, flips the node to enforcing, maps the
+# connection user to staff_u, and applies the four foundation roles in order.
+- name: Prepare the substrate and foundation tier
+  ansible.builtin.import_playbook: ../../../../molecule/shared/foundation_prepare.yml

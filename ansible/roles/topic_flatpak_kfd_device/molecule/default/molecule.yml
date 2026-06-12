@@ -1,0 +1,44 @@
+---
+# Component scenario for topic_flatpak_kfd_device. Uses the built-in delegated driver with
+# the shared create/destroy playbooks that provision real Hetzner Cloud VMs;
+# containers cannot exercise SELinux-enforcing, PID 1, or a real reboot.
+# Cloud nodes expose no /dev/kfd (no AMD GPU); the role's node-absent
+# informational path and the verify's SKIP discipline cover this case.
+prerun: false
+dependency:
+  name: galaxy
+driver:
+  name: default
+platforms:
+  - name: managed-flatpak-kfd-device
+    server_type: cpx21
+    image: fedora-44
+    location: ash
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+    ANSIBLE_SKIP_TAGS: reboot-prompt
+  playbooks:
+    create: ../../../../molecule/shared/create.yml
+    destroy: ../../../../molecule/shared/destroy.yml
+    prepare: prepare.yml
+    converge: converge.yml
+    verify: verify.yml
+  config_options:
+    defaults:
+      interpreter_python: auto_silent
+      host_key_checking: false
+verifier:
+  name: ansible
+scenario:
+  name: default
+  test_sequence:
+    - dependency
+    - destroy
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

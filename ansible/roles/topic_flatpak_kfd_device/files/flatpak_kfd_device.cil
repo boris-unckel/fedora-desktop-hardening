@@ -1,0 +1,16 @@
+;; flatpak_kfd_device.cil — patches one stock-policy gap on Fedora 44
+;; that affects the bwrap sandbox-construction step of Flatpak
+;; applications holding the dri device permission, on hosts running
+;; Flatpak 1.18 or later whose kernel exposes the AMD compute device
+;; node /dev/kfd, where the desktop login is mapped to the confined
+;; SELinux user staff_u and bwrap runs in the source domain staff_t
+;; (no stock type-transition to bwrap_t).
+;;
+;; Functional rule: Flatpak 1.18+ includes /dev/kfd (type hsa_device_t)
+;; in the device-bind set derived from the dri permission; bwrap
+;; stat(2)s the bind source before mounting it. Stock policy carries
+;; zero allow rules on staff_t × hsa_device_t : chr_file, so the stat
+;; fails with EACCES (dontaudit-suppressed, no AVC record) and the
+;; sandbox construction aborts before the application starts. The
+;; getattr-only grant keeps compute access from staff_t closed.
+(allow staff_t hsa_device_t (chr_file (getattr)))

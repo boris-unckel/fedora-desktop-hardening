@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 ---
 # Tunables for topic_flatpak_kfd_device. Override in group_vars or playbook.
 

@@ -1,3 +1,4 @@
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 ;; flatpak_kfd_device.cil — patches one stock-policy gap on Fedora 44
 ;; that affects the bwrap sandbox-construction step of Flatpak
 ;; applications holding the dri device permission, on hosts running

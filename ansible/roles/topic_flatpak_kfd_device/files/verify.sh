@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # verify.sh — Soll/Ist comparison for topic_flatpak_kfd_device.
 #

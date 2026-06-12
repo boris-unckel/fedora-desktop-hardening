@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 ---
 # Component scenario for topic_flatpak_kfd_device. Uses the built-in delegated driver with
 # the shared create/destroy playbooks that provision real Hetzner Cloud VMs;

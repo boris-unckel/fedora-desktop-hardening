@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 ---
 # Component prepare: establish the substrate and the foundation tier. The
 # shared play installs SELinux tooling, flips the node to enforcing, maps the

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 ---
 # Verify: run the role-shipped verify.sh in both SELinux contexts. The plain
 # staff_t pass reports sysadm_t-gated checks as SKIP and exercises the

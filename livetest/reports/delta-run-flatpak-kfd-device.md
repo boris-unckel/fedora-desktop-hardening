@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 # Delta run — topic_flatpak_kfd_device (plus sibling re-confirmation)
 
 A scoped component-tier run for one new topic, not a full fan-out. Scope: the

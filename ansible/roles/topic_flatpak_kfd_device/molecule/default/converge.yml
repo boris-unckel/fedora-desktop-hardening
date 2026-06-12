@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 ---
 # Converge: apply the single topic under test. The foundation substrate is
 # established by prepare.yml; the topic role's meta dependencies re-assert the

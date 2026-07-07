@@ -61,11 +61,11 @@ part of that class with whole-host impact. See
 | Cloud-testability | Count | Topics |
 |---|---|---|
 | Full | 15 | headless component scenario passes with real effectiveness |
-| Full (presence) | 4 | headless component scenario passes; effectiveness deferred to session tier |
+| Full (presence) | 3 | headless component scenario passes; effectiveness deferred to session tier |
 | Session | 4 | needs the headless session substrate |
 | HW-gap | 4 | needs hardware a virtual machine lacks |
 
-Nineteen of twenty-seven topics are meaningfully verifiable on a stock headless virtual
+Eighteen of twenty-six topics are meaningfully verifiable on a stock headless virtual
 machine (Full plus Full-presence). Four need the session substrate, and four need real
 hardware. The four Foundation layers are all Full and are a prerequisite for every
 scenario.
@@ -116,7 +116,6 @@ vacuously green.
 |---|---|---|---|
 | `topic_flatpak_audio_sandbox` | flatpak audio sandbox policy | `flatpak_audio_sandbox.cil` loaded; allow rule present; AVC-class-clean | P3 |
 | `topic_flatpak_oci_pull_dbus` | flatpak OCI-pull D-Bus policy | `flatpak_oci_pull_dbus.cil` loaded; allow rule present; AVC-class-clean | P3 |
-| `topic_gnupg_pinentry_dbus` | pinentry D-Bus policy | `gnupg_pinentry_dbus.cil` loaded; rules a and b present; AVC-class-clean | P3 |
 | `topic_staff_wayland_memfd` | Wayland memfd policy | `staff_wayland_memfd.cil` loaded; map and write rules present; AVC-class-clean | P3 |
 
 ### Session-dependent
@@ -169,7 +168,7 @@ scope. The PrivateMounts override relates to
 
 ## Session-dependent topics and presence-only effectiveness
 
-The four Session topics and the four Full-presence topics are the work of the phased
+The four Session topics and the three Full-presence topics are the work of the phased
 session-effectiveness tier described in [the test concept](test-concept.md). The tier
 brings up a headless session substrate as the `staff_u` user and exercises the
 protected paths:

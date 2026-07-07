@@ -41,9 +41,8 @@ readonly BASE_PACKAGES=(
   audit cups dbus-broker chrony cronie rng-tools tuned udisks2 udisks2-iscsi
   smartmontools thermald plymouth NetworkManager avahi switcheroo-control
   alsa-utils aide
-  # session / flatpak / gnupg / python topics (presence-oriented)
-  flatpak bubblewrap ostree xdg-desktop-portal gnupg2 pinentry pinentry-gnome3
-  gcr3 python3 python3-pip
+  # session / flatpak / python topics (presence-oriented)
+  flatpak bubblewrap ostree xdg-desktop-portal python3 python3-pip
 )
 # The full GNOME desktop stack (gnome-shell, mutter, gdm) is deliberately NOT
 # baked in. It pulls gdm and the graphical target, which thrashes a headless VM

@@ -19,13 +19,11 @@
   vars:
     foundation_sudo_roles_user: "{{ ansible_user }}"
     # Each topic role self-verifies during apply, so the cumulative converge
-    # only carries topics whose verify.sh is green on a headless VM. Three
+    # only carries topics whose verify.sh is green on a headless VM. Two
     # otherwise-cloud-testable topics are held out as documented open items,
     # not included here: topic_cups and topic_aide (each clean except an
-    # avc_clean count still being classified), and topic_gnupg_pinentry_dbus
-    # (applicability-gated on an operator pinentry selection the harness cannot
-    # supply in a readable context). Session and Wayland-session topics are
-    # excluded by design.
+    # avc_clean count still being classified). Session and Wayland-session
+    # topics are excluded by design.
     system_tier_topics:
       # P1 — whole-host / boot-failure class, applied first.
       - topic_kernel_hardening

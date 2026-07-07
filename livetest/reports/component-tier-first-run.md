@@ -153,16 +153,16 @@ denial `auditctl_t -> auditd_log_t:dir { read }` raised when `auditctl` runs thr
 `sysadm_r` transition). It now counts distinct denial records and excludes that
 admin-tool self-denial, and prints any real denial.
 
-A full fan-out then ran all 23 cloud-testable topics serially from the base snapshot.
-`topic_auditd` passed; the other 22 failed in three root-caused classes:
+A full fan-out then ran all 22 cloud-testable topics serially from the base snapshot.
+`topic_auditd` passed; the other 21 failed in three root-caused classes:
 
 | Class | Topics | Root cause | Status |
 |---|---|---|---|
-| Invalid server name | 12 (every topic whose name contains an underscore: dbus_broker, kernel_hardening, network_manager, avahi_daemon, flatpak_collection_id, python_pip_user_tree, switcheroo_control, flatpak_audio_sandbox, flatpak_oci_pull_dbus, gnupg_pinentry_dbus, staff_wayland_memfd, alsa_state) | The provisioned server name `managed-<topic>` carried the role-name underscore; the provider rejects names that are not valid hostnames. Confirmed (dbus_broker, kernel_hardening). | Fixed: hyphenate the generated platform names. |
+| Invalid server name | 11 (every topic whose name contains an underscore: dbus_broker, kernel_hardening, network_manager, avahi_daemon, flatpak_collection_id, python_pip_user_tree, switcheroo_control, flatpak_audio_sandbox, flatpak_oci_pull_dbus, staff_wayland_memfd, alsa_state) | The provisioned server name `managed-<topic>` carried the role-name underscore; the provider rejects names that are not valid hostnames. Confirmed (dbus_broker, kernel_hardening). | Fixed: hyphenate the generated platform names. |
 | Verify drift | cups confirmed; chronyd, cron, rngd, tuned, udisks2, smartd, aide ran and failed verify, cause not yet captured | cups failed a stat of its daemon's vendor unit because the package is absent from the minimal base image (auditd passed because `audit` is baked in). The other seven are unconfirmed (per-node logs were torn down with the control node). | Pending: bake the common daemon packages into the base (a desktop-like target) or have prepare install the topic package; then re-confirm the rest. |
 | Node unreachable | plymouth, thermald | SSH never came up within 300 s. Cause not isolated. | Pending: investigate (cloud-init/boot vs transient). |
 
-The 22 generated component scenarios and `flush_handlers` across 22 roles are committed to
+The 21 generated component scenarios and `flush_handlers` across 21 roles are committed to
 the tree. All cloud resources were torn down after the run; the project holds zero
 resources. The remaining work — base-package strategy, the unreachable pair, per-topic
 verify drift, and the system tier — is a distinct next pass; this matrix is its roadmap.
@@ -214,9 +214,9 @@ control-node Molecule run are the reliable signals.
 
 ### Second fan-out result
 
-All 23 cloud-testable topics ran serially from the rebuilt base: **7 pass** (auditd,
+All 22 cloud-testable topics ran serially from the rebuilt base: **7 pass** (auditd,
 network_manager, tuned, flatpak_collection_id, flatpak_audio_sandbox, flatpak_oci_pull_dbus,
-python_pip_user_tree), 16 fail. The failures are categorised; most are verify-script drift
+python_pip_user_tree), 15 fail. The failures are categorised; most are verify-script drift
 the live test correctly surfaced, not hardening defects:
 
 | Category | Topics | Cause | Disposition |
@@ -226,7 +226,6 @@ the live test correctly surfaced, not hardening defects:
 | F44 fcontext drift in preflight | kernel_hardening (`sysctl_conf_t`→`system_conf_t`, `systemd_unit_file_t`→`systemd_conf_t`), cron (drop-in dir), aide (`aide_conf_t`→`etc_t`) | the expected SELinux types predate the F44 labelling; preflight gates the role before apply | Pending: update expected types to the F44 values. |
 | Environment / tooling gap | cups (`lpstat` non-zero: no printers), dbus_broker (`dbus-send` absent), aide (database not initialised) | the check assumes a desktop with state a fresh VM lacks | Pending: make the check tolerant of the headless baseline or seed the state. |
 | HW-gap (expected non-green) | smartd (no SMART device → inactive), thermald, switcheroo_control, alsa_state | virtio exposes no SMART/DPTF/GPU-mux/sound hardware | Expected; verify directive application, not daemon liveness. |
-| Applicability-gated (expected) | gnupg_pinentry_dbus | no `pinentry-gnome3` backend selected on the node, so the topic gates itself out | Expected; needs a prepare that selects the backend to exercise. |
 | Deferred package | staff_wayland_memfd | asserts a desktop package dropped from the lean base | Pending: a GUI-enabled variant or scenario-local install. |
 | Open finding | cups | `avc_clean` reports 2 denials (records not yet captured) | Pending: capture the records; classify real vs benign as with the auditd `auditctl_t` case. |
 
@@ -234,7 +233,7 @@ the live test correctly surfaced, not hardening defects:
 
 The fixed subset (rngd, plymouth, udisks2, thermald, switcheroo_control, alsa_state) was
 re-run. **udisks2 now passes** (the set-compare cleared its cap and RAF order drift), taking
-the green count to 8/23. The others, with `readonly -i` fixed, now run their real checks and
+the green count to 8/22. The others, with `readonly -i` fixed, now run their real checks and
 expose the next layer:
 
 - **RestrictAddressFamilies order is systemic.** rngd, thermald, and alsa_state all fail the
@@ -264,7 +263,7 @@ expose the next layer:
    `system_conf_t` + `systemd_conf_t`, cron drop-in dir, aide `etc_t`, alsa `alsactl` path).
 4. Make liveness/active tolerant of oneshot services and classify HW-gap topics
    (smartd/thermald/alsa/switcheroo) as directive-applied rather than daemon-live; treat
-   applicability-gated topics (gnupg_pinentry_dbus, switcheroo_control) as expected skips.
+   the applicability-gated topic (switcheroo_control) as an expected skip.
 5. Make environment-dependent checks tolerant of the headless baseline (cups `lpstat` with no
    printers, dbus-broker `dbus-send` absent, aide uninitialised database, rngd entropy source)
    or seed the state in prepare.
@@ -335,7 +334,6 @@ systemic harness bugs and two genuine hardening/role defects, and built the syst
 | Green (confirmed this pass) | 11 | rngd, thermald, cron, smartd, avahi_daemon, dbus_broker, plymouth, switcheroo_control, alsa_state, chronyd, kernel_hardening |
 | Green (carried, unchanged) | 8 | auditd, network_manager, tuned, udisks2, flatpak_collection_id, flatpak_audio_sandbox, flatpak_oci_pull_dbus, python_pip_user_tree |
 | Deferred — open AVC finding | 2 | aide (`avc_clean` 12 hits, from the prepare full-FS `aide --init`), cups (`avc_clean` 2 hits) — records to be captured and classified |
-| Expected skip — applicability | 1 | gnupg_pinentry_dbus (preflight cannot read the operator's `gpg-agent.conf`, `gpg_secret_t`; belongs to the session tier) |
 | Out of scope — session / Wayland | 5 | keepassxc, mozilla_firefox, mozilla_thunderbird, flatpak_portal_cache, staff_wayland_memfd |
 
 The base snapshot, control node, network, key, and firewalls are kept per the cost policy;

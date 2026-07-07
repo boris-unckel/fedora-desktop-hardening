@@ -11,9 +11,8 @@
 #      the run. systemd-analyze is built into systemd and always runs.
 #   2. The shared foundation substrate (SELinux tooling probe, staff_u mapping,
 #      enforcing, reboot-to-enforcing, then the four foundation roles).
-#   3. The two topic preconditions the operator owns in production: the AIDE
-#      baseline database and the pinentry-gnome3 selection. Without these the
-#      aide and gnupg_pinentry_dbus topics would gate themselves out.
+#   3. The one topic precondition the operator owns in production: the AIDE
+#      baseline database. Without it the aide topic would gate itself out.
 
 - name: Capture the pre-hardening security baseline on the stock node
   hosts: all
@@ -105,7 +104,7 @@
       when: (scoring_tools.rc | default(1)) == 0
 
 # Stage 2: the shared foundation substrate (includes the reboot to enforcing).
-# topic_aide and topic_gnupg_pinentry_dbus are held out of the system tier
-# (see converge.yml), so their operator-precondition seeds are not needed here.
+# topic_aide is held out of the system tier (see converge.yml), so its
+# operator-precondition seed is not needed here.
 - name: Prepare the substrate and foundation tier
   ansible.builtin.import_playbook: ../shared/foundation_prepare.yml

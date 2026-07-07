@@ -22,8 +22,7 @@ disposition matrix, and the captured scores — is
   from the baked base snapshot: create, foundation prepare, converge, idempotence with
   zero changed tasks, verify in both SELinux contexts (`staff_t` and `sysadm_t`), destroy.
   Of the remaining topic roles, `aide` and `cups` are deferred on an open AVC-record
-  classification, `gnupg_pinentry_dbus` gates itself out on a headless node (it belongs
-  to the session tier), and five session/Wayland topics (`keepassxc`, `mozilla_firefox`,
+  classification, and five session/Wayland topics (`keepassxc`, `mozilla_firefox`,
   `mozilla_thunderbird`, `flatpak_portal_cache`, `staff_wayland_memfd`) are outside cloud
   scope.
 - **System tier: fully green.** Cumulative converge of the Foundation plus all 19 green

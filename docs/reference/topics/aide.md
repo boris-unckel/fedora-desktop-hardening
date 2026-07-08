@@ -5,7 +5,7 @@
 
 ## Scope
 
-This topic documents the end-state operator-deployed integrity-monitor profile for the AIDE file-integrity check on a Fedora 44 or later host. The end-state ships three core artefacts plus one optional artefact plus one managed configuration block: two operator-supplied unit files under `/etc/systemd/system/` (`aide-check.service`, `aide-check.timer`), one topic-owned three-rule SELinux CIL module under `/usr/local/share/selinux/` (`aide_extras.cil`), an opt-in acknowledgement-aware interactive-shell push-banner under `/etc/profile.d/` (`aide-alert.sh`), and one marker-delimited scope-tuning block appended to the stock `/etc/aide.conf`. The managed scope-tuning block is **in scope** for this topic: the role adds it to the stock configuration to remove structurally volatile paths from the daily delta so that a future non-zero exit again means a real integrity change. The end-state also includes the database refresh discipline (`aide --init` plus the post-refresh `restorecon` on the database, with a forensic pre-rebaseline note), the daily-check exit-code semantics (the AIDE bitmask `new(1) + removed(2) + changed(4) = 7` is by-design and not a unit failure), the verify discipline, and the rollback posture. This topic does **not** cover the stock `/etc/aide.conf` body outside the managed block, the `aide-update` companion subcommand, the cron-driven path via `/etc/cron.daily/aide`, the full AIDE selector grammar beyond the attributes the managed block uses, the operator-side mailer integration that pipes the daily-check diff into a mail recipient, the `systemd-analyze security` numeric score model, or any extended hardening direction beyond the three-allow CIL surface.
+This topic documents the end-state operator-deployed integrity-monitor profile for the AIDE file-integrity check on a Fedora 44 or later host. The end-state ships three core artefacts plus one optional artefact plus one managed configuration block: two operator-supplied unit files under `/etc/systemd/system/` (`aide-check.service`, `aide-check.timer`), one topic-owned one-rule SELinux CIL module under `/usr/local/share/selinux/` (`aide_extras.cil`), an opt-in acknowledgement-aware interactive-shell push-banner under `/etc/profile.d/` (`aide-alert.sh`), and one marker-delimited scope-tuning block appended to the stock `/etc/aide.conf`. The managed scope-tuning block is **in scope** for this topic: the role adds it to the stock configuration to remove structurally volatile paths from the daily delta so that a future non-zero exit again means a real integrity change. The end-state also includes the database refresh discipline (`aide --init` plus the post-refresh `restorecon` on the database, with a forensic pre-rebaseline note), the daily-check exit-code semantics (the AIDE bitmask `new(1) + removed(2) + changed(4) = 7` is by-design and not a unit failure), the verify discipline, and the rollback posture. This topic does **not** cover the stock `/etc/aide.conf` body outside the managed block, the `aide-update` companion subcommand, the cron-driven path via `/etc/cron.daily/aide`, the full AIDE selector grammar beyond the attributes the managed block uses, the operator-side mailer integration that pipes the daily-check diff into a mail recipient, the `systemd-analyze security` numeric score model, or any extended hardening direction beyond the one-allow CIL surface.
 
 ## End-state configuration
 
@@ -34,7 +34,7 @@ The `aide` package installs the binary at `/usr/sbin/aide`. The Fedora 44 `/usr/
 |---|---|
 | `/etc/systemd/system/aide-check.service` | Operator-supplied oneshot service unit invoking `/usr/sbin/aide --check`. |
 | `/etc/systemd/system/aide-check.timer` | Operator-supplied daily timer with 30-minute jitter and `Persistent=yes`. |
-| `/usr/local/share/selinux/aide_extras.cil` | Topic-owned three-allow-rule CIL module loaded at priority 400. |
+| `/usr/local/share/selinux/aide_extras.cil` | Topic-owned one-allow-rule CIL module loaded at priority 400. |
 | `/etc/aide.conf` (managed block appended) | Stock configuration plus one marker-delimited scope-tuning block. |
 | `/etc/profile.d/aide-alert.sh` (optional) | Acknowledgement-aware interactive-shell push-banner decoding the most recent daily-check exit bitmask. |
 
@@ -102,17 +102,11 @@ Path: `/usr/local/share/selinux/aide_extras.cil`. Loaded at priority 400 via `se
 
 ```cil
 (allow aide_t dosfs_t (filesystem (getattr)))
-(allow aide_t xdm_var_run_t (sock_file (write)))
-(allow aide_t xdm_t (unix_stream_socket (connectto)))
 ```
 
-The module ships three allow rules in a single file. Each rule closes one Reference-Policy gap that an `aide --check` run reveals on a stock Fedora 44 host:
+The module ships one allow rule that closes a Reference-Policy gap an `aide --check` run reveals on a stock Fedora 44 host:
 
 - **Rule 1** (`aide_t × dosfs_t : filesystem getattr`) covers the `fstatfs(2)` syscall AIDE issues on every walked path's containing filesystem to record the filesystem-type fingerprint. vfat-mounted paths — the EFI System Partition under `/boot/efi/` and any plug-in USB drives — are typed `dosfs_t`, and stock targeted policy on Fedora 44 lacks the `aide_t × dosfs_t : filesystem getattr` allow.
-- **Rule 2** (`aide_t × xdm_var_run_t : sock_file write`) covers the GDM userdb-provider socket discovered by NSS during AIDE's `getpwuid(3)` and `getgrgid(3)` calls (which the AIDE selector set `u`+`g` triggers per database entry). GDM's provider socket under `/run/systemd/userdb/` inherits the `xdm_var_run_t` type rather than the canonical `systemd_userdbd_var_run_t`, and stock policy lacks the `aide_t × xdm_var_run_t : sock_file write` allow that NSS's `connect(2)` requires.
-- **Rule 3** (`aide_t × xdm_t : unix_stream_socket connectto`) covers the same NSS-userdb-provider lookup against the `xdm_t` domain's `unix_stream_socket` class — the variant the kernel evaluates after the type-mislabel is resolved at the socket-endpoint layer.
-
-The class behind rules 2 and 3 is the GDM userdb-provider socket type-inheritance anomaly documented in [The NSS userdb provider AVC trap](../../explanation/nss-userdb-provider-avc.md).
 
 The module is topic-owned rather than appended to a shared module. Topic-tier discipline isolates the role's deploy and rollback footprint: the rollback step `semodule -X 400 -r aide_extras` removes only this topic's extension; no other topic's CIL module is touched. Priority 400 places the extension above stock targeted policy (which ships at priority 100) but below any operator-side high-priority overrides.
 
@@ -287,8 +281,6 @@ The verify script compares observed state against a hardcoded expected set and e
 | `matchpathcon /usr/sbin/aide` or `matchpathcon /usr/bin/aide` | at least one resolves to `aide_exec_t` (either-or fail-fast) |
 | `semodule -l \| grep -cx aide_extras` | `1` (sysadm_t-gated; `SKIP` from staff_t) |
 | `sesearch -A -s aide_t -t dosfs_t -c filesystem -p getattr` | at least one allow line (sysadm_t-gated; `SKIP` from staff_t) |
-| `sesearch -A -s aide_t -t xdm_var_run_t -c sock_file -p write` | at least one allow line (sysadm_t-gated; `SKIP` from staff_t) |
-| `sesearch -A -s aide_t -t xdm_t -c unix_stream_socket -p connectto` | at least one allow line (sysadm_t-gated; `SKIP` from staff_t) |
 | Managed scope-tuning marker in `/etc/aide.conf` | present (sysadm_t-gated; `SKIP` from staff_t) |
 | `aide --config-check` | clean parse (sysadm_t-gated; `SKIP` from staff_t) |
 | Banner acknowledgement block | the monotonic-stamp marker present in the installed banner (`SKIP` when the banner is opted out) |
@@ -308,7 +300,7 @@ sudo -r sysadm_r -t sysadm_t ausearch -m AVC -ts boot \
   | grep -E '(aide_t|aide_exec_t|aide_db_t|aide_log_t|aide_conf_t)'
 ```
 
-The verify script runs this filter and treats any hit as drift. The diagnosis loop documented in [Audit and logging baseline](../foundation/audit-logging-baseline.md) reads its records from the audit stream this topic's daily check exercises end-to-end (the file walk, the database write, the NSS-userdb lookups); the AVC-posture check above is therefore that diagnosis loop applied against AIDE's own audit stream.
+The verify script runs this filter and treats any hit as drift. The diagnosis loop documented in [Audit and logging baseline](../foundation/audit-logging-baseline.md) reads its records from the audit stream this topic's daily check exercises end-to-end (the file walk and the database write); the AVC-posture check above is therefore that diagnosis loop applied against AIDE's own audit stream.
 
 ### Functional smoketest
 

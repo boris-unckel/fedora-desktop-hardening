@@ -4,8 +4,8 @@
 # wrong, when the aide package is not installed, or when neither
 # matchpathcon for the canonical /usr/bin/aide nor the package-installed
 # /usr/sbin/aide resolves to aide_exec_t. Install-path fcontext checks,
-# the three nnp-class-equivalent stock-policy pre-tests for the CIL
-# rules, the AIDE-stream baseline recon, and the database-presence
+# the nnp-class-equivalent stock-policy pre-test for the CIL
+# rule, the AIDE-stream baseline recon, and the database-presence
 # probe are non-fatal reports.
 
 - name: "preflight | OS family check"
@@ -159,64 +159,6 @@
       {{ topic_aide_expected_selinux_domain }} -> dosfs_t : filesystem getattr:
       {{ 'EMPTY (expected; topic CIL rule 1 is required and will be installed)'
          if (pretest_rule1.stdout | trim) == '' else
-         'NON-EMPTY (the rule is already in policy; topic CIL install at '
-         + 'priority 400 is idempotent and overlays without harm)' }}.
-
-- name: "preflight | SELinux pre-test rule 2 (aide_t -> xdm_var_run_t : sock_file write; expected empty)"
-  ansible.builtin.command:
-    argv:
-      - sesearch
-      - "-A"
-      - "-s"
-      - "{{ topic_aide_expected_selinux_domain }}"
-      - "-t"
-      - "xdm_var_run_t"
-      - "-c"
-      - "sock_file"
-      - "-p"
-      - "write"
-  register: pretest_rule2
-  changed_when: false
-  failed_when: false
-  become: true
-  become_flags: "-r sysadm_r -t sysadm_t"
-
-- name: "preflight | report SELinux pre-test outcome (rule 2)"
-  ansible.builtin.debug:
-    msg: >
-      SELinux pre-test for
-      {{ topic_aide_expected_selinux_domain }} -> xdm_var_run_t : sock_file write:
-      {{ 'EMPTY (expected; topic CIL rule 2 is required and will be installed)'
-         if (pretest_rule2.stdout | trim) == '' else
-         'NON-EMPTY (the rule is already in policy; topic CIL install at '
-         + 'priority 400 is idempotent and overlays without harm)' }}.
-
-- name: "preflight | SELinux pre-test rule 3 (aide_t -> xdm_t : unix_stream_socket connectto; expected empty)"
-  ansible.builtin.command:
-    argv:
-      - sesearch
-      - "-A"
-      - "-s"
-      - "{{ topic_aide_expected_selinux_domain }}"
-      - "-t"
-      - "xdm_t"
-      - "-c"
-      - "unix_stream_socket"
-      - "-p"
-      - "connectto"
-  register: pretest_rule3
-  changed_when: false
-  failed_when: false
-  become: true
-  become_flags: "-r sysadm_r -t sysadm_t"
-
-- name: "preflight | report SELinux pre-test outcome (rule 3)"
-  ansible.builtin.debug:
-    msg: >
-      SELinux pre-test for
-      {{ topic_aide_expected_selinux_domain }} -> xdm_t : unix_stream_socket connectto:
-      {{ 'EMPTY (expected; topic CIL rule 3 is required and will be installed)'
-         if (pretest_rule3.stdout | trim) == '' else
          'NON-EMPTY (the rule is already in policy; topic CIL install at '
          + 'priority 400 is idempotent and overlays without harm)' }}.
 

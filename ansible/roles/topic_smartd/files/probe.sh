@@ -4,7 +4,7 @@
 # probe.sh — read-only diagnostics for topic_smartd.
 #
 # Reports current state of the smartd.service unit, the three drop-in
-# files, the topic-owned CIL module, and the F44 fcontext mapping. The
+# files, and the topic-owned CIL module. The
 # probe is read-only and runnable from a staff_t-confined shell. Checks
 # that need sysadm_t are reported as informational; the probe never gates
 # on observed state.
@@ -159,15 +159,6 @@ probe_selinux_domain() {
   fi
 }
 
-probe_fcontext() {
-  printf -- '--- F44 fcontext mapping ---\n'
-  if ! command -v matchpathcon >/dev/null 2>&1; then
-    printf 'matchpathcon: not available\n'
-    return
-  fi
-  matchpathcon "${BINARY_PATH}" 2>/dev/null || true
-}
-
 probe_cil_module() {
   printf -- '--- CIL module presence ---\n'
   if ! is_sysadm_t; then
@@ -193,7 +184,6 @@ main() {
   probe_merged_unit
   probe_directives
   probe_selinux_domain
-  probe_fcontext
   probe_cil_module
   printf -- '--- end of probe ---\n'
 }

@@ -2,7 +2,7 @@
 ---
 galaxy_info:
   role_name: topic_smartd
-  description: "smartd SATA-SMART-polling hardening (three drop-ins, topic-owned CIL, F44 fcontext mitigation)."
+  description: "smartd SATA-SMART-polling hardening (three drop-ins, topic-owned CIL)."
   license: "MIT"
   min_ansible_version: "2.14"
   platforms:

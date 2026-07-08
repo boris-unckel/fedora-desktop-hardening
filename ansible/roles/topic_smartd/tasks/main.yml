@@ -9,9 +9,8 @@
 #   1. Push CIL source to /usr/local/share/selinux/.
 #   2. Install CIL module via semodule -X 400 -i (handler).
 #   3. flush_handlers — the CIL must be loaded before the NNP drop-in.
-#   4. Add F44 fcontext mapping (community.general.sefcontext).
-#   5. Push the three drop-in INI files.
-#   6. Daemon-reload + restart (handlers).
+#   4. Push the three drop-in INI files.
+#   5. Daemon-reload + restart (handlers).
 # A change to any of the four shipping artefacts notifies the appropriate
 # handler chain. Live-state probe is read-only.
 
@@ -55,16 +54,6 @@
 
     - name: "topic_smartd | flush handlers (CIL must be loaded before NNP drop-in)"
       ansible.builtin.meta: flush_handlers
-
-    - name: "topic_smartd | F44 fcontext mapping for /usr/bin/smartd"
-      community.general.sefcontext:
-        target: "{{ topic_smartd_fcontext_path }}"
-        setype: "{{ topic_smartd_fcontext_setype }}"
-        state: present
-      become: true
-      become_flags: "-r sysadm_r -t sysadm_t"
-      notify:
-        - "restorecon smartd"
 
     - name: "topic_smartd | drop-in directory present"
       ansible.builtin.file:
@@ -160,8 +149,8 @@
           topic_smartd apply step failed. Auto-rollback is intentionally
           not performed; rolling back the four artefacts requires an
           operator decision about which stage to revert (NNP plus CIL
-          unload only, NNP plus process-restrict, or all four artefacts
-          plus the F44 fcontext mapping). See the topic Reference under
+          unload only, NNP plus process-restrict, or all four artefacts).
+          See the topic Reference under
           "Verification" for the three-stage rollback sequence and the
           recover-from-boot-failure how-to for the boot-failure variant.
 

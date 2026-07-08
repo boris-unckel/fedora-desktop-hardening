@@ -8,10 +8,6 @@
 #   "topic_smartd dropin changed" — fires on a change to any of the three
 #                                  drop-in files. Triggers daemon-reload
 #                                  followed by a unit restart.
-#
-# A separate "restorecon smartd" handler is notified by the
-# community.general.sefcontext task in tasks/main.yml and runs after the
-# fcontext mapping is added.
 
 - name: "topic_smartd | semodule install nnp_smartd"
   ansible.builtin.command:
@@ -24,17 +20,6 @@
   become: true
   become_flags: "-r sysadm_r -t sysadm_t"
   listen: "topic_smartd cil changed"
-
-- name: "topic_smartd | restorecon smartd"
-  ansible.builtin.command:
-    argv:
-      - restorecon
-      - "-v"
-      - "/usr/bin/smartd"
-      - "/usr/sbin/smartd"
-  become: true
-  become_flags: "-r sysadm_r -t sysadm_t"
-  listen: "restorecon smartd"
 
 - name: "topic_smartd | daemon-reload"
   ansible.builtin.systemd:

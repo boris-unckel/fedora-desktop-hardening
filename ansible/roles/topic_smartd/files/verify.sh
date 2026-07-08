@@ -44,8 +44,6 @@ readonly -a EXPECTED_SCF_ANCHORS=(
   "fstat"
 )
 readonly REQUIRED_PACKAGE="smartmontools"
-readonly BINARY_PATH="/usr/bin/smartd"
-readonly EXPECTED_FCONTEXT="system_u:object_r:fsdaemon_exec_t:s0"
 readonly EXPECTED_CIL_MODULE="nnp_smartd"
 
 declare -i fail_state=0
@@ -223,22 +221,6 @@ verify_selinux_domain() {
   fi
 }
 
-verify_fcontext() {
-  if ! command -v matchpathcon >/dev/null 2>&1; then
-    report_fail "fcontext_smartd" "matchpathcon not available"
-    return
-  fi
-  local raw label
-  raw=$(matchpathcon "${BINARY_PATH}" 2>/dev/null || true)
-  label=$(printf '%s' "${raw}" | awk '{print $NF}')
-  if [[ "${label}" == "${EXPECTED_FCONTEXT}" ]]; then
-    report_ok "fcontext_smartd" "${label}"
-  else
-    report_fail "fcontext_smartd" \
-      "expected=${EXPECTED_FCONTEXT} actual=${label}"
-  fi
-}
-
 verify_cil_module() {
   if ! is_sysadm_t; then
     report_skip "cil_${EXPECTED_CIL_MODULE}" "needs sysadm_t"
@@ -294,7 +276,6 @@ main() {
     "${EXPECTED_RAF}"
   verify_systemcallfilter
   verify_selinux_domain
-  verify_fcontext
   verify_cil_module
   verify_avc_clean
   exit "${fail_state}"

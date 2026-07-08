@@ -5,11 +5,11 @@
 
 ## Scope
 
-This topic documents the end-state hardening of the `smartd.service` SATA-SMART-polling daemon on a Fedora 44 or later host. The end-state is a four-artefact deploy profile under `/etc/systemd/system/smartd.service.d/` and `/usr/local/share/selinux/`: a namespace-default baseline drop-in, an isolated `NoNewPrivileges=yes` drop-in, a process-internal kernel-restrictions drop-in that carries the SATA-SMART `CAP_SYS_RAWIO` carve-out, and a topic-owned SELinux CIL module that enables the `init_t → fsdaemon_t : process2 nnp_transition` rule that stock targeted policy does not ship for this domain. The end-state also includes the Fedora 44 sbin/bin-merge fcontext mitigation that restores `fsdaemon_t` confinement on the on-disk binary path, the verify discipline that confirms each layer, the AVC-clean assertion, the pre-hardening SATA-SMART baseline discipline, and a three-stage rollback posture. This topic does not cover the `smartctl(8)` command-line client (operator-policy surface), the `/etc/smartmontools/smartd.conf` content (mail-notification, polling-interval, per-disk `DEVICESCAN` directives — operator-policy outside this topic), the broader Linux SCSI generic IOCTL stack (the SMART carve-out is motivated below; the kernel mechanism lives in a Pattern article), or the `systemd-analyze security` numeric score model.
+This topic documents the end-state hardening of the `smartd.service` SATA-SMART-polling daemon on a Fedora 44 or later host. The end-state is a four-artefact deploy profile under `/etc/systemd/system/smartd.service.d/` and `/usr/local/share/selinux/`: a namespace-default baseline drop-in, an isolated `NoNewPrivileges=yes` drop-in, a process-internal kernel-restrictions drop-in that carries the SATA-SMART `CAP_SYS_RAWIO` carve-out, and a topic-owned SELinux CIL module that enables the `init_t → fsdaemon_t : process2 nnp_transition` rule that stock targeted policy does not ship for this domain. The end-state also includes the verify discipline that confirms each layer, the AVC-clean assertion, the pre-hardening SATA-SMART baseline discipline, and a three-stage rollback posture. This topic does not cover the `smartctl(8)` command-line client (operator-policy surface), the `/etc/smartmontools/smartd.conf` content (mail-notification, polling-interval, per-disk `DEVICESCAN` directives — operator-policy outside this topic), the broader Linux SCSI generic IOCTL stack (the SMART carve-out is motivated below; the kernel mechanism lives in a Pattern article), or the `systemd-analyze security` numeric score model.
 
 ## End-state configuration
 
-The end-state combines four shipping artefacts: a namespace-default baseline drop-in, an isolated `NoNewPrivileges=yes` drop-in, a topic-owned SELinux CIL module that lifts the kernel NNP-transition denial for the daemon's domain, and a process-internal kernel-restrictions drop-in that carries the capability bounding set, the address-family restriction, and the syscall filter. A separate fcontext mapping under `file_contexts.local` restores `fsdaemon_t` confinement on the F44 binary path. Subsections below describe each artefact in turn.
+The end-state combines four shipping artefacts: a namespace-default baseline drop-in, an isolated `NoNewPrivileges=yes` drop-in, a topic-owned SELinux CIL module that lifts the kernel NNP-transition denial for the daemon's domain, and a process-internal kernel-restrictions drop-in that carries the capability bounding set, the address-family restriction, and the syscall filter. Subsections below describe each artefact in turn.
 
 ### Service identity
 
@@ -23,7 +23,7 @@ The unit `smartd.service` is shipped by the `smartmontools` package. The stock v
 | User / group | `root:root` |
 | SELinux domain | `fsdaemon_t` |
 
-The SELinux type-transition `init_t → fsdaemon_t` fires on the executable label `fsdaemon_exec_t` carried by the binary. On Fedora 44 or later, the binary lives at `/usr/bin/smartd`; `/usr/sbin/smartd` is a compatibility symlink that resolves to the same inode. The path layout matters for SELinux confinement and is the subject of the `F44 sbin/bin-merge fcontext mitigation` subsection below.
+The SELinux type-transition `init_t → fsdaemon_t` fires on the executable label `fsdaemon_exec_t` carried by the binary. On Fedora 44 or later, the binary lives at `/usr/bin/smartd`; `/usr/sbin/smartd` is a compatibility symlink that resolves to the same inode.
 
 The vendor unit ships no `RuntimeDirectory=`, no `StateDirectory=`, no `ConfigurationDirectory=`, and no `LogsDirectory=` directive, and this topic adds none. As a consequence, no `ReadWritePaths=` entry on a daemon-self-managed runtime path is required, and the boot-time mount-namespace race that affects daemons whose drop-ins point `ReadWritePaths=` at a directory the daemon creates itself does not apply here.
 
@@ -129,25 +129,6 @@ Directive notes:
 - `SystemCallFilter=@system-service` (additive baseline) plus `SystemCallFilter=~@privileged @resources @debug @mount @cpu-emulation @obsolete @raw-io @reboot @swap @module @clock` (subtractive narrowing). systemd composes successive `SystemCallFilter=` directives multiplicatively: the additive line establishes the daemon-class envelope, and the subtractive line strips classes the daemon does not need. `@mount` is dropped because the daemon is not a mount-manager. `@raw-io` is dropped because the SCSI-generic IOCTL path the daemon uses for SATA-SMART rides on `ioctl(2)` from `@system-service`, not on the `@raw-io` syscall class — the two are orthogonal, as documented in [Storage SMART and CAP_SYS_RAWIO](../../explanation/storage-smart-rawio.md). The daemon performs no multi-stage privilege drop, so the additive plus subtractive form covers everything it issues; the multi-stage-drop class falls under the [Multi-stage privilege-drop and SystemCallFilter carve-outs](../../explanation/phase-b-scf-privdrop.md) Pattern.
 - `CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN` retains the two capabilities the daemon requires. `CAP_SYS_RAWIO` is the SATA-SMART carve-out: the kernel `SG_IO` ATA-pass-through path checks `capable(CAP_SYS_RAWIO)`, and a bounding set without it silently breaks SMART polling on SATA drives. `CAP_SYS_ADMIN` is retained for the daemon's broader IO-control needs even though the daemon does not call `mount(2)`. The class mechanism, the NVMe-versus-SATA divergence, and the additive cap-set mitigation are documented in [Storage SMART and CAP_SYS_RAWIO](../../explanation/storage-smart-rawio.md). An NVMe-only host may drop `CAP_SYS_RAWIO` per the same logic; the role keeps it in the default profile because mixed SATA/NVMe is the conservative assumption.
 
-### F44 sbin/bin-merge fcontext mitigation
-
-Stock `selinux-policy` on Fedora 44 ships `file_contexts` with `/usr/sbin/smartd → fsdaemon_exec_t` only. The global path equivalency `/usr/sbin /usr/bin` in `file_contexts.subs_dist` resolves the `/usr/sbin/smartd` lookup to `/usr/bin/smartd`, where no specific mapping exists; the binary then inherits the generic `bin_t` label and the daemon falls back to `unconfined_service_t` at runtime. The hardening drop-ins continue to apply (cgroup and process-axis restrictions remain in effect), but SELinux confinement is silently lost.
-
-The mitigation is a specific fcontext mapping for the `/usr/bin/smartd` path under `file_contexts.local`, applied via `community.general.sefcontext`:
-
-```yaml
-- name: F44 fcontext mapping for /usr/bin/smartd
-  community.general.sefcontext:
-    target: /usr/bin/smartd
-    setype: fsdaemon_exec_t
-    state: present
-  become: true
-  become_flags: "-r sysadm_r -t sysadm_t"
-  notify: restorecon smartd
-```
-
-The handler runs `restorecon -v /usr/bin/smartd /usr/sbin/smartd` on both the file and the symlink. The reverse-equivalency form `semanage fcontext -a -e /usr/sbin/smartd /usr/bin/smartd` is anti-pattern: the stock `/usr/sbin → /usr/bin` equivalency makes any reverse mapping circular, `restorecon` no-ops, and the binary keeps the `bin_t` label. The class mechanism, the detection scan that finds all affected daemons on a host, and the mitigation form are documented in [F44 sbin/bin merge fcontext](../../explanation/f44-sbin-bin-merge.md).
-
 ### File modes
 
 All four shipping artefacts are written with mode `0644`, owner `root`, group `root`. The role's modify stage sets the mode and ownership explicitly per file rather than relying on the operator UMASK. The explicit `chmod 0644` is the standard reflex established in [UMASK 0027](../foundation/umask.md).
@@ -169,7 +150,7 @@ The role's `files/` directory ships two scripts: a read-only probe and a Soll/Is
 bash ansible/roles/topic_smartd/files/probe.sh
 ```
 
-The probe reports state without judging it. It enumerates package presence (`smartmontools`), unit liveness, the merged unit body filtered for the three drop-in filenames and the directives this topic configures, the effective values of the managed properties via per-property `systemctl show -p <PROP> --value` calls (one call per property; never multi-property, because multi-property output ordering is not stable across systemd versions), the live SELinux domain of the running PID via `awk -F: '{print $3}' /proc/<MainPID>/attr/current`, the `matchpathcon /usr/bin/smartd` lookup that confirms the F44 fcontext mapping, and the `semodule -l | grep nnp_smartd` lookup that confirms the CIL module is loaded. The CIL lookup is gated behind a `sysadm_t` check and reports `SKIP needs sysadm_t` from `staff_t`. The probe exits `0` on completion regardless of observed state and `2` only on missing tooling.
+The probe reports state without judging it. It enumerates package presence (`smartmontools`), unit liveness, the merged unit body filtered for the three drop-in filenames and the directives this topic configures, the effective values of the managed properties via per-property `systemctl show -p <PROP> --value` calls (one call per property; never multi-property, because multi-property output ordering is not stable across systemd versions), the live SELinux domain of the running PID via `awk -F: '{print $3}' /proc/<MainPID>/attr/current`, and the `semodule -l | grep nnp_smartd` lookup that confirms the CIL module is loaded. The CIL lookup is gated behind a `sysadm_t` check and reports `SKIP needs sysadm_t` from `staff_t`. The probe exits `0` on completion regardless of observed state and `2` only on missing tooling.
 
 ### Verify
 
@@ -187,7 +168,6 @@ The verify script compares observed state against a hardcoded expected set and e
 | `RestrictAddressFamilies` | `AF_UNIX` |
 | `SystemCallFilter` | length `> 200` bytes after expansion, contains anchor syscalls (`read`, `write`, `openat`, `close`, `ioctl`, `fstat`) |
 | Live SELinux domain | `fsdaemon_t` |
-| `matchpathcon /usr/bin/smartd` | `system_u:object_r:fsdaemon_exec_t:s0` |
 | `semodule -l | grep nnp_smartd` | one line (sysadm_t-gated) |
 
 Two normalisation conventions are load-bearing. `systemctl show -p CapabilityBoundingSet --value` returns capabilities in alphabetical lower-case form, so the expected string is `cap_sys_admin cap_sys_rawio` and any other order or any extra capability fails the check. `RestrictAddressFamilies=AF_UNIX` carries a single value, so no source-order question arises.
@@ -196,7 +176,7 @@ The `SystemCallFilter` check is a length-plus-anchor form, not a class-name matc
 
 Liveness is checked through `[ -d /proc/${main_pid} ]`, never `kill -0 ${main_pid}`. From a `staff_t` shell, `kill -0` against a root-owned PID returns `EPERM` rather than `ESRCH`, and a verify script that reads the rc as "PID gone" reports a live daemon as dead. The `[ -d /proc/${main_pid} ]` form is ownership-independent. The class trap is documented in [The kill-0 cross-user EPERM trap](../../explanation/kill-0-cross-user-eperm.md).
 
-The live SELinux domain is read via `awk -F: '{print $3}' < /proc/${main_pid}/attr/current` and compared against the expected value `fsdaemon_t`. The read works from `staff_t` for non-own PIDs in the absence of `hidepid=`. The `matchpathcon /usr/bin/smartd` check is read-only and works from `staff_t` without escalation; it is the primary F44 confinement assertion. The `semodule -l | grep nnp_smartd` check reports CIL module presence and is gated behind a `sysadm_t` check; from `staff_t`, the line reports `SKIP needs sysadm_t` rather than drift.
+The live SELinux domain is read via `awk -F: '{print $3}' < /proc/${main_pid}/attr/current` and compared against the expected value `fsdaemon_t`. The read works from `staff_t` for non-own PIDs in the absence of `hidepid=`. The `semodule -l | grep nnp_smartd` check reports CIL module presence and is gated behind a `sysadm_t` check; from `staff_t`, the line reports `SKIP needs sysadm_t` rather than drift.
 
 ### AVC posture
 
@@ -220,14 +200,13 @@ sudo -r sysadm_r -t sysadm_t journalctl -u smartd.service -b 0 \
 
 On a stock host with one or more SATA drives in healthy condition, the baseline is typically `0`. Post-deploy, the same query must still return `0`. A non-zero result post-deploy with a zero baseline indicates a missing `CAP_SYS_RAWIO` carve-out. The class mechanism, the NVMe-versus-SATA divergence, and the additive cap-set mitigation are documented in [Storage SMART and CAP_SYS_RAWIO](../../explanation/storage-smart-rawio.md). NVMe-only hosts may skip this baseline; SATA and mixed hosts record it.
 
-The role's modify stage is idempotent. The four shipping artefacts are pushed via `ansible.builtin.copy` from the role's `files/` directory and converge on byte-for-byte content match. The fcontext mapping is added via `community.general.sefcontext` with `state: present`. The `semodule install`, `daemon-reload`, `restart`, and `restorecon` handlers each fire only on a change to their notifying task. The live-state probe is read-only. On a correctly applied host, `--check` reports zero changes. Stated as a claim, not a guarantee.
+The role's modify stage is idempotent. The four shipping artefacts are pushed via `ansible.builtin.copy` from the role's `files/` directory and converge on byte-for-byte content match. The `semodule install`, `daemon-reload`, and `restart` handlers each fire only on a change to their notifying task. The live-state probe is read-only. On a correctly applied host, `--check` reports zero changes. Stated as a claim, not a guarantee.
 
-The rollback posture is three-stage. **Stage 1**: remove `99-nnp.conf` and unload the CIL extension with `semodule -X 400 -r nnp_smartd`, then `systemctl daemon-reload` and `systemctl restart smartd.service`. The NNP layer alone is reverted; the namespace-default baseline, the process-internal restrictions, and the F44 fcontext mapping all remain. **Stage 2**: in addition to Stage 1, remove `99-process-restrict.conf`. The process-internal restrictions are reverted; the namespace-default baseline and the F44 fcontext mapping remain. **Stage 3**: in addition to Stages 1 and 2, remove `99-hardening.conf` and remove the F44 fcontext mapping with `semanage fcontext -d /usr/bin/smartd` followed by `restorecon -v /usr/bin/smartd /usr/sbin/smartd`. The unit reverts entirely to the stock vendor configuration. The recovery how-to covers the boot-failure variant of the rollback; this Reference does not inline boot-failure recovery.
+The rollback posture is three-stage. **Stage 1**: remove `99-nnp.conf` and unload the CIL extension with `semodule -X 400 -r nnp_smartd`, then `systemctl daemon-reload` and `systemctl restart smartd.service`. The NNP layer alone is reverted; the namespace-default baseline and the process-internal restrictions remain. **Stage 2**: in addition to Stage 1, remove `99-process-restrict.conf`. The process-internal restrictions are reverted; the namespace-default baseline remains. **Stage 3**: in addition to Stages 1 and 2, remove `99-hardening.conf`. The unit reverts entirely to the stock vendor configuration. The recovery how-to covers the boot-failure variant of the rollback; this Reference does not inline boot-failure recovery.
 
 > **If a deployment of this topic prevents boot:** see [Recover from boot failure](../../how-to/recover-from-boot-failure.md). Topic Reference articles do not inline recovery steps.
 
 ## Related patterns
 
 - [NNP and SELinux transition trap](../../explanation/nnp-selinux-transition-trap.md) — Why stock targeted policy on Fedora 44 does not ship the `init_t → fsdaemon_t : process2 nnp_transition` allow rule, and why deploying `NoNewPrivileges=yes` without the topic-owned CIL module would deny the `execve(2)` of `/usr/bin/smartd` at next boot under `no_new_privs`.
-- [F44 sbin/bin merge fcontext](../../explanation/f44-sbin-bin-merge.md) — Why a daemon whose stock SELinux mapping points at `/usr/sbin/<binary>` runs unconfined on Fedora 44, and why the reverse-equivalency form does not fix it.
 - [Storage SMART and CAP_SYS_RAWIO](../../explanation/storage-smart-rawio.md) — Why `CapabilityBoundingSet=` includes `CAP_SYS_RAWIO` alongside `CAP_SYS_ADMIN`: the kernel `SG_IO` ATA-pass-through path checks `capable(CAP_SYS_RAWIO)`, and a bounding set without it silently disables SATA-SMART polling while leaving the daemon's primary process active.

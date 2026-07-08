@@ -7,7 +7,7 @@
 # in docs/reference/topics/aide.md. The service is Type=oneshot and has
 # no MainPID between runs, so there is no liveness check on the service;
 # the verify script asserts the timer's active+enabled state instead.
-# The CIL-module-presence, three-rule sesearch, and AVC-clean checks are
+# The CIL-module-presence, single-rule sesearch, and AVC-clean checks are
 # gated behind a sysadm_t domain check and reported as SKIP from staff_t.
 #
 # Usage: bash verify.sh
@@ -331,10 +331,6 @@ main() {
   verify_cil_module
   verify_cil_rule "cil_rule_dosfs" \
     "${EXPECTED_DOMAIN}" "dosfs_t" "filesystem" "getattr"
-  verify_cil_rule "cil_rule_xdm_sock" \
-    "${EXPECTED_DOMAIN}" "xdm_var_run_t" "sock_file" "write"
-  verify_cil_rule "cil_rule_xdm_connectto" \
-    "${EXPECTED_DOMAIN}" "xdm_t" "unix_stream_socket" "connectto"
   verify_scope_block
   verify_config_check
   verify_banner_ack

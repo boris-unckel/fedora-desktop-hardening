@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 ---
-# Component scenario for topic_aide. Uses the built-in delegated driver with
-# the shared create/destroy playbooks that provision real Hetzner Cloud VMs;
-# containers cannot exercise SELinux-enforcing, PID 1, or a real reboot.
+# Component scenario for topic_integrity_monitoring. Uses the built-in
+# delegated driver with the shared create/destroy playbooks that provision real
+# cloud VMs; containers cannot exercise SELinux-enforcing, PID 1, or the
+# systemd job serialisation this topic depends on.
 prerun: false
 dependency:
   name: galaxy
 driver:
   name: default
 platforms:
-  - name: managed-aide
+  - name: managed-integrity-monitoring
     server_type: cpx21
     image: fedora-44
     location: ash

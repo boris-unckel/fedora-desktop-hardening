@@ -1,0 +1,513 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# /usr/local/sbin/integrity-check
+#
+# Aggregated file-integrity check. Replaces a whole-tree AIDE run with four
+# checks, only one of which carries a baseline at all:
+#
+#   1  rpm -Va          Content, mode, owner, group and capabilities of the
+#                       package-owned set. NO baseline — the package database
+#                       is updated atomically by the transaction that changes
+#                       the files.
+#   2  Unowned sweep    Files that belong to no package. NO baseline —
+#                       computed against the package database on every run.
+#                       Catches the class (1) structurally cannot see: a new
+#                       unowned binary in a system binary directory.
+#   3  AIDE             Hash history of the remainder. The ONLY check with a
+#                       baseline, and it now spans a few thousand paths
+#                       instead of the whole tree.
+#   4  restorecon -nvR  SELinux context drift. Dry-run only. A class (1)
+#                       cannot express.
+#
+# SELinux — a deliberate, bounded trade-off:
+#   This script carries bin_t, so PID 1 starts it as unconfined_service_t, and
+#   from that domain there are no type-transitions to aide_exec_t, rpm_exec_t
+#   or setfiles_exec_t (verify with `sesearch -T -s unconfined_service_t`).
+#
+#   For AIDE that is unacceptable — aide_t is a documented end-state property.
+#   Check 3 therefore does not run here; it runs through
+#   `systemctl start --wait aide-check.service`, so PID 1 execs the binary and
+#   the stock init_t -> aide_t transition applies.
+#
+#   rpm -Va and restorecon -n do run unconfined. Both are strictly read-only
+#   (restorecon exclusively in dry-run), so the value of rpm_t / setfiles_t
+#   for a pure verification pass is small. The same nesting pattern extends to
+#   them without redesign if a deployment wants them confined.
+#
+# TRAP — `systemctl start --wait` does not propagate the inner unit's exit
+#   code. Measured: an inner unit exiting 5 produced caller rc=1. The status
+#   MUST be read with `systemctl show -p ExecMainStatus`. Consuming the caller
+#   rc collapses the AIDE bitmask onto "non-zero" and makes a tool failure
+#   (21 = file lock) indistinguishable from a content delta.
+#
+# Exit status — deliberately NOT the AIDE 1/2/4 bitmask, which describes one
+#   tool's three change classes and does not extend to four aggregated checks:
+#   0  all four checks clean
+#   1  at least one check reports findings
+#   2  at least one check failed as a tool
+#
+# Log: one file per run under the AIDE log directory. That directory choice is
+#   deliberate — it carries aide_log_t, the one location the inner aide_t
+#   domain may write, and a separate directory would have needed a
+#   file-context entry for no gain. The file name carries the package-manager
+#   transaction id, which binds the trail to the transaction that triggered it.
+
+set -euo pipefail
+
+# Deterministic and locale-independent. Both reasons are correctness, not
+# tidiness:
+#   1. `comm` requires identically sorted inputs, and `sort` collates by
+#      locale — a comparison built under one locale and run under another
+#      silently produces wrong set differences.
+#   2. Part of the parsed output is translated: `rpm -Va` reports a localised
+#      word for a missing file.
+export LC_ALL=C
+
+readonly LOG_DIR="/var/log/aide"
+readonly LOG_PREFIX="integrity"
+readonly RETENTION_DAYS=90
+readonly AIDE_UNIT="aide-check.service"
+readonly AIDE_INIT_UNIT="aide-init.service"
+readonly AIDE_DB="/var/lib/aide/aide.db.gz"
+readonly ACCEPT_DIR="/etc/integrity-check"
+readonly ACCEPT_RPM="${ACCEPT_DIR}/accepted-rpm-verify.txt"
+readonly ACCEPT_UNOWNED="${ACCEPT_DIR}/accepted-unowned.txt"
+readonly ACCEPT_CONTEXT="${ACCEPT_DIR}/accepted-context.txt"
+readonly -a SCAN_ROOTS=(/usr /opt /boot /etc)
+
+LOG=""
+FINDINGS=0
+TOOL_ERRORS=0
+
+# -----------------------------------------------------------------------------
+# log_line(text...)
+#
+# Writes to stdout (journal) and to the log file. The file write happens only
+# in this process — no sub-command ever inherits a write descriptor on the log.
+# That matters because sub-commands transition into other domains, and a
+# descriptor inherited by a transitioned domain is checked against THAT
+# domain's write set, not this one's.
+# -----------------------------------------------------------------------------
+log_line() {
+  printf '%s\n' "$*"
+  [[ -n "$LOG" ]] && printf '%s\n' "$*" >>"$LOG"
+  return 0
+}
+
+log_block() {
+  printf '%s\n' "$1"
+  [[ -n "$LOG" ]] && printf '%s\n' "$1" >>"$LOG"
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# normalize_paths()
+#
+# stdin -> stdout. Resolves BOTH path-aliasing classes that otherwise make a
+# `find` versus `rpm -qal` comparison wrong:
+#   1. merged /usr   /bin,/sbin,/lib,/lib64  ->  /usr/*
+#   2. merged sbin   /usr/sbin               ->  /usr/bin
+# Skipping (2) alone reported hundreds of compatibility symlinks as findings
+# on every run. The failure is silent and plausible: the comparison succeeds,
+# the counts look reasonable, the answer is wrong.
+# -----------------------------------------------------------------------------
+normalize_paths() {
+  sed -E -e 's#^/(bin|sbin|lib|lib64)/#/usr/\1/#' -e 's#^/usr/sbin/#/usr/bin/#'
+}
+
+# -----------------------------------------------------------------------------
+# accepted(file)
+#
+# Prints an acceptance list sorted, comments and blank lines removed. A missing
+# file yields an empty list, so everything counts as a finding.
+# -----------------------------------------------------------------------------
+accepted() {
+  local f="$1"
+  [[ -r "$f" ]] || return 0
+  grep -vE '^\s*(#|$)' "$f" 2>/dev/null | sort -u
+}
+
+# -----------------------------------------------------------------------------
+# transaction_id()
+#
+# Last package-manager transaction id, so the trail is bound to the
+# transaction that triggered the run. NONE when not determinable.
+# -----------------------------------------------------------------------------
+transaction_id() {
+  local id
+  id="$(dnf history list --reverse 2>/dev/null \
+    | awk '$1 ~ /^[0-9]+$/ { id = $1 } END { print id }')" || true
+  printf '%s\n' "${id:-NONE}"
+}
+
+# -----------------------------------------------------------------------------
+# check_rpm_verify()
+#
+# Ghost entries (file-type marker `g` in the second column) are filtered: the
+# package manager declares them expected-to-differ, so reporting them on every
+# run is noise by construction.
+# -----------------------------------------------------------------------------
+check_rpm_verify() {
+  log_line ""
+  log_line "--- Check 1: rpm -Va (package-owned set) ---"
+  local out rc current new n
+  out="$(rpm -Va 2>&1)" && rc=0 || rc=$?
+
+  # rc 0 = no deviation, 1 = deviations found. Anything else is a tool failure
+  # and must not pass as "no findings".
+  if [[ "$rc" -gt 1 ]]; then
+    log_line "  TOOL FAILURE: rpm -Va rc=${rc}"
+    log_block "$out"
+    TOOL_ERRORS=$((TOOL_ERRORS + 1))
+    return 0
+  fi
+
+  current="$(printf '%s\n' "$out" | grep -vE '^\S+\s+g\s' | grep -E '\S' | sort -u || true)"
+  new="$(comm -23 <(printf '%s\n' "$current" | grep -E '\S' || true) \
+                  <(accepted "$ACCEPT_RPM") || true)"
+  n="$(printf '%s\n' "$new" | grep -c . || true)"
+  if [[ "$n" -eq 0 ]]; then
+    log_line "  ok -- no new deviations"
+  else
+    log_line "  FINDING: ${n} new deviation(s)"
+    log_block "$(printf '%s\n' "$new" | sed 's/^/    /')"
+    FINDINGS=$((FINDINGS + n))
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# check_unowned()
+#
+# Reports additions AND removals against the acceptance list. A vanished
+# expected path is an event too — in particular the disappearance of an
+# acceptance list, which is the direct route to suppressing findings.
+# -----------------------------------------------------------------------------
+check_unowned() {
+  log_line ""
+  log_line "--- Check 2: unowned sweep (files no package owns) ---"
+  local rpmlist fslist current added removed na nr
+
+  rpmlist="$(rpm -qal 2>/dev/null | normalize_paths | sort -u)"
+  if [[ -z "$rpmlist" ]]; then
+    log_line "  TOOL FAILURE: rpm -qal produced no output"
+    TOOL_ERRORS=$((TOOL_ERRORS + 1))
+    return 0
+  fi
+  fslist="$(find "${SCAN_ROOTS[@]}" -xdev \( -type f -o -type l \) 2>/dev/null \
+    | normalize_paths | sort -u)"
+  current="$(comm -23 <(printf '%s\n' "$fslist") <(printf '%s\n' "$rpmlist"))"
+
+  added="$(comm -23 <(printf '%s\n' "$current" | grep -E '\S' || true) \
+                    <(accepted "$ACCEPT_UNOWNED") || true)"
+  removed="$(comm -13 <(printf '%s\n' "$current" | grep -E '\S' || true) \
+                      <(accepted "$ACCEPT_UNOWNED") || true)"
+  na="$(printf '%s\n' "$added" | grep -c . || true)"
+  nr="$(printf '%s\n' "$removed" | grep -c . || true)"
+
+  if [[ "$na" -eq 0 && "$nr" -eq 0 ]]; then
+    log_line "  ok -- inventory unchanged"
+  fi
+  if [[ "$na" -gt 0 ]]; then
+    log_line "  FINDING: ${na} new unmanaged file(s)"
+    log_block "$(printf '%s\n' "$added" | sed 's/^/    + /')"
+    FINDINGS=$((FINDINGS + na))
+  fi
+  if [[ "$nr" -gt 0 ]]; then
+    log_line "  FINDING: ${nr} expected file(s) gone"
+    log_block "$(printf '%s\n' "$removed" | sed 's/^/    - /')"
+    FINDINGS=$((FINDINGS + nr))
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# check_aide()
+#
+# Through the inner unit so PID 1 execs and init_t -> aide_t applies.
+# Status via ExecMainStatus, never via the caller rc — see header.
+# -----------------------------------------------------------------------------
+check_aide() {
+  log_line ""
+  log_line "--- Check 3: AIDE (hash baseline of the unmanaged remainder) ---"
+
+  # The inner unit carries ConditionPathExists on the database. Without it the
+  # unit is SKIPPED rather than failed, and ExecMainStatus would still hold the
+  # value of the PREVIOUS run — reporting a stale status as the current result.
+  if [[ ! -f "$AIDE_DB" ]]; then
+    log_line "  TOOL FAILURE: ${AIDE_DB} missing -- baseline never taken?"
+    log_line "    Create it with: /usr/local/sbin/integrity-check accept"
+    TOOL_ERRORS=$((TOOL_ERRORS + 1))
+    return 0
+  fi
+
+  systemctl reset-failed "$AIDE_UNIT" 2>/dev/null || true
+  systemctl start --wait "$AIDE_UNIT" 2>/dev/null || true
+
+  local status
+  status="$(systemctl show -p ExecMainStatus --value "$AIDE_UNIT" 2>/dev/null || true)"
+  log_line "  ExecMainStatus=${status:-<empty>}"
+
+  case "${status:-}" in
+    0)
+      log_line "  ok -- no change"
+      ;;
+    [1-7])
+      local parts=""
+      (( status & 1 )) && parts+="added "
+      (( status & 2 )) && parts+="removed "
+      (( status & 4 )) && parts+="changed "
+      log_line "  FINDING: ${parts% }"
+      FINDINGS=$((FINDINGS + 1))
+      ;;
+    "")
+      log_line "  TOOL FAILURE: no ExecMainStatus readable"
+      TOOL_ERRORS=$((TOOL_ERRORS + 1))
+      ;;
+    *)
+      # >= 14 are AIDE tool failures; 21 is the report-file lock error, which
+      # is what a concurrent second run produces.
+      log_line "  TOOL FAILURE: AIDE exit=${status}$( [[ "$status" == "21" ]] \
+        && printf ' (file lock -- a concurrent AIDE run)' )"
+      TOOL_ERRORS=$((TOOL_ERRORS + 1))
+      ;;
+  esac
+
+  # Do not leave the inner unit in a failed state: this run's aggregate status
+  # belongs to the outer unit, not to it.
+  systemctl reset-failed "$AIDE_UNIT" 2>/dev/null || true
+}
+
+# -----------------------------------------------------------------------------
+# check_context()
+#
+# Dry-run only, changes nothing.
+# -----------------------------------------------------------------------------
+check_context() {
+  log_line ""
+  log_line "--- Check 4: SELinux context drift (restorecon -nvR) ---"
+  local out rc current new n
+
+  out="$(restorecon -nvR "${SCAN_ROOTS[@]}" 2>&1)" && rc=0 || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    log_line "  TOOL FAILURE: restorecon rc=${rc}"
+    log_block "$out"
+    TOOL_ERRORS=$((TOOL_ERRORS + 1))
+    return 0
+  fi
+
+  # Reduce to the path: the target context can change with a policy update
+  # without the drift being a different one.
+  current="$(printf '%s\n' "$out" \
+    | sed -nE 's#^Would relabel (\S+) from .*#\1#p' | sort -u)"
+  new="$(comm -23 <(printf '%s\n' "$current" | grep -E '\S' || true) \
+                  <(accepted "$ACCEPT_CONTEXT") || true)"
+  n="$(printf '%s\n' "$new" | grep -c . || true)"
+  if [[ "$n" -eq 0 ]]; then
+    log_line "  ok -- no new context drift"
+  else
+    log_line "  FINDING: ${n} path(s) with deviating SELinux context"
+    log_block "$(printf '%s\n' "$out" | grep -Ff <(printf '%s\n' "$new") | sed 's/^/    /')"
+    FINDINGS=$((FINDINGS + n))
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# prune_logs()
+#
+# Age limit over the set. logrotate is the wrong tool: it rotates per file,
+# these are one file per run — `rotate N` counts generations of each single
+# file and never deletes anything, and copytruncate leaves a zero-byte
+# artefact, which is exactly the shape that hides a broken trail.
+# -----------------------------------------------------------------------------
+prune_logs() {
+  find "$LOG_DIR" -maxdepth 1 -name "${LOG_PREFIX}-*.log" \
+    -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null || true
+}
+
+# -----------------------------------------------------------------------------
+# write_accept_lists()
+#
+# Writes the package-verification and unowned lists from current state. The
+# context list is deliberately NOT touched — context drift is a defect, not an
+# inventory, and it disappears by being fixed rather than accepted.
+#
+# The three acceptance lists enter the unowned list explicitly. They are not
+# package-owned and cannot appear in the sweep result that produces them,
+# because the sweep runs first. Excluding the acceptance directory from the
+# sweep instead would be the wrong fix: listing them keeps their DISAPPEARANCE
+# a finding, which is what an operator wants to know when someone removes an
+# acceptance list to suppress results.
+# -----------------------------------------------------------------------------
+write_accept_lists() {
+  local ts out rpmlist fslist current
+  ts="$(date +%Y%m%d-%H%M%S)"
+
+  log_line "--- accepted-rpm-verify.txt ---"
+  out="$(rpm -Va 2>&1)" || true
+  current="$(printf '%s\n' "$out" | grep -vE '^\S+\s+g\s' | grep -E '\S' | sort -u || true)"
+  {
+    printf '# integrity-check: accepted rpm -Va deviations\n'
+    printf '# Current state adopted at %s\n' "$ts"
+    printf '# Ghost entries (second-column marker g) are already filtered out.\n'
+    printf '%s\n' "$current"
+  } >"${ACCEPT_RPM}.new"
+  mv -f "${ACCEPT_RPM}.new" "$ACCEPT_RPM"
+  chmod 0644 "$ACCEPT_RPM"
+  chown root:root "$ACCEPT_RPM"
+  log_line "  $(printf '%s\n' "$current" | grep -c . || true) line(s) adopted"
+
+  log_line ""
+  log_line "--- accepted-unowned.txt ---"
+  rpmlist="$(rpm -qal 2>/dev/null | normalize_paths | sort -u)"
+  if [[ -z "$rpmlist" ]]; then
+    log_line "  FAILURE: rpm -qal produced no output"
+    return 1
+  fi
+  fslist="$(find "${SCAN_ROOTS[@]}" -xdev \( -type f -o -type l \) 2>/dev/null \
+    | normalize_paths | sort -u)"
+  current="$(comm -23 <(printf '%s\n' "$fslist") <(printf '%s\n' "$rpmlist"))"
+  {
+    printf '# integrity-check: accepted non-package-owned paths\n'
+    printf '# Current state adopted at %s\n' "$ts"
+    printf '# The three acceptance lists are included: they are written after\n'
+    printf '# the sweep and can therefore never contain themselves.\n'
+    {
+      printf '%s\n' "$current"
+      printf '%s\n%s\n%s\n' "$ACCEPT_RPM" "$ACCEPT_UNOWNED" "$ACCEPT_CONTEXT"
+    } | grep -E '\S' | sort -u
+  } >"${ACCEPT_UNOWNED}.new"
+  mv -f "${ACCEPT_UNOWNED}.new" "$ACCEPT_UNOWNED"
+  chmod 0644 "$ACCEPT_UNOWNED"
+  chown root:root "$ACCEPT_UNOWNED"
+  log_line "  $(grep -cvE '^\s*(#|$)' "$ACCEPT_UNOWNED" || true) path(s) adopted (including the lists themselves)"
+
+  log_line ""
+  log_line "--- accepted-context.txt ---"
+  log_line "  deliberately NOT refreshed -- context drift is fixed, not accepted."
+  log_line "  Add proven false positives there by hand."
+  log_line ""
+}
+
+# -----------------------------------------------------------------------------
+# mode_accept()
+#
+# Adopts current state as the new reference. Deliberately manual and
+# deliberately absent from the timer.
+# -----------------------------------------------------------------------------
+mode_accept() {
+  local ts
+  ts="$(date +%Y%m%d-%H%M%S)"
+  LOG="${LOG_DIR}/${LOG_PREFIX}-accept-${ts}.log"
+  mkdir -p "$LOG_DIR" "$ACCEPT_DIR"
+  : >"$LOG"
+  chmod 0600 "$LOG"
+
+  log_line "integrity-check accept -- ${ts}"
+  log_line ""
+
+  # ORDER IS LOAD-BEARING: write the acceptance lists first, refresh the hash
+  # baseline second. The reverse leaves the freshly written lists outside the
+  # baseline, so the very next check reports them as changed — a phantom
+  # finding no review can resolve, because every acceptance run recreates it.
+  write_accept_lists || return 2
+
+  log_line "--- AIDE baseline (after the lists, see above) ---"
+  systemctl reset-failed "$AIDE_INIT_UNIT" 2>/dev/null || true
+  systemctl start --wait "$AIDE_INIT_UNIT" 2>/dev/null || true
+
+  # ExecMainStatus reflects ExecStart only. The two ExecStartPost steps (moving
+  # the new database into place, relabelling it) would stay invisible to it: on
+  # failure the OLD database is still there and still non-empty, so a check of
+  # ExecMainStatus plus a non-empty test would report success on a refresh that
+  # never happened. Result covers the whole unit.
+  local status result
+  status="$(systemctl show -p ExecMainStatus --value "$AIDE_INIT_UNIT" 2>/dev/null || true)"
+  result="$(systemctl show -p Result --value "$AIDE_INIT_UNIT" 2>/dev/null || true)"
+  log_line "  ExecMainStatus=${status:-<empty>}  Result=${result:-<empty>}"
+  if [[ "$status" != "0" || "$result" != "success" ]]; then
+    log_line "  FAILURE: ${AIDE_INIT_UNIT} did not complete cleanly."
+    log_line "  journalctl -u ${AIDE_INIT_UNIT} -b 0"
+    return 2
+  fi
+  # Proof the move step ran: the intermediate file must be gone.
+  if [[ -e "/var/lib/aide/aide.db.new.gz" ]]; then
+    log_line "  FAILURE: aide.db.new.gz still present -- move step did not run."
+    return 2
+  fi
+  if [[ ! -s "$AIDE_DB" ]]; then
+    log_line "  FAILURE: ${AIDE_DB} missing or empty after --init"
+    return 2
+  fi
+  log_line "  ok -- $(stat -c '%s' "$AIDE_DB") bytes, label $(stat -c '%C' "$AIDE_DB")"
+
+  log_line ""
+  log_line "=== accept complete ==="
+  if [[ ! -s "$LOG" ]]; then
+    printf 'integrity-check accept: log %s is empty.\n' "$LOG" >&2
+    return 2
+  fi
+  prune_logs
+  return 0
+}
+
+mode_check() {
+  local ts txid
+  ts="$(date +%Y%m%d-%H%M%S)"
+  txid="$(transaction_id)"
+  LOG="${LOG_DIR}/${LOG_PREFIX}-${ts}-dnf${txid}.log"
+
+  mkdir -p "$LOG_DIR"
+  : >"$LOG"
+  chmod 0600 "$LOG"
+
+  log_line "integrity-check -- ${ts}"
+  log_line "transaction : ${txid}"
+  log_line "context     : $(id -Z 2>/dev/null || echo '?')"
+
+  check_rpm_verify
+  check_unowned
+  check_aide
+  check_context
+
+  log_line ""
+  log_line "=== result ==="
+  log_line "  findings      : ${FINDINGS}"
+  log_line "  tool failures : ${TOOL_ERRORS}"
+
+  # Without a written log there is no trail, and a "clean" result would not be
+  # demonstrable.
+  if [[ ! -s "$LOG" ]]; then
+    printf 'integrity-check: log %s is empty -- trail not written.\n' "$LOG" >&2
+    return 2
+  fi
+
+  prune_logs
+
+  if [[ "$TOOL_ERRORS" -gt 0 ]]; then
+    log_line "  -> exit 2 (tool failure)"
+    return 2
+  fi
+  if [[ "$FINDINGS" -gt 0 ]]; then
+    log_line "  -> exit 1 (findings)"
+    return 1
+  fi
+  log_line "  -> exit 0 (clean)"
+  return 0
+}
+
+usage() {
+  printf 'Usage: %s [check|accept]\n' "${0##*/}" >&2
+  printf '  check   (default) four checks, log under %s, exit 0/1/2\n' "$LOG_DIR" >&2
+  printf '  accept  adopt current state as the new reference -- ONLY after review\n' >&2
+}
+
+main() {
+  local mode="${1:-check}"
+  case "$mode" in
+    check)  mode_check ;;
+    accept) mode_accept ;;
+    *)      usage; return 2 ;;
+  esac
+}
+
+main "$@"

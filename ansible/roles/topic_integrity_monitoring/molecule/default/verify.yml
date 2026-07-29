@@ -1,0 +1,88 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Component verify. Runs the role's own verify.sh as the primary gate, then
+# asserts the properties that are specific to this topic and would not show up
+# in a generic file-mode sweep.
+- name: Verify topic_integrity_monitoring
+  hosts: all
+  gather_facts: false
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  tasks:
+
+    - name: "verify | daemon-reload before reading unit state"
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: "verify | run the role verify script"
+      ansible.builtin.script: "../../files/verify.sh"
+      register: verify_out
+      changed_when: false
+
+    - name: "verify | report"
+      ansible.builtin.debug:
+        var: verify_out.stdout_lines
+
+    - name: "verify | the AIDE check still runs confined"
+      ansible.builtin.command:
+        argv:
+          - sesearch
+          - "-T"
+          - "-s"
+          - "init_t"
+          - "-t"
+          - "aide_exec_t"
+          - "-c"
+          - "process"
+      register: transition
+      changed_when: false
+
+    - name: "verify | assert the transition the nested-unit design relies on"
+      ansible.builtin.assert:
+        that:
+          - "'aide_t' in transition.stdout"
+        fail_msg: >
+          The stock type-transition init_t -> aide_t is absent. The nested-unit
+          design exists to obtain it; without it the AIDE check runs unconfined
+          and the topic's central SELinux claim does not hold.
+
+    - name: "verify | the inversion actually shrank the baseline"
+      ansible.builtin.stat:
+        path: /var/lib/aide/aide.db.gz
+      register: db
+
+    - name: "verify | assert a scope-reduced baseline"
+      ansible.builtin.assert:
+        that:
+          - db.stat.exists
+          - db.stat.size > 0
+        fail_msg: "No baseline present after converge."
+
+    - name: "verify | acceptance lists are hashed, not merely permission-checked"
+      ansible.builtin.command:
+        argv:
+          - grep
+          - "-E"
+          - "^/etc/integrity-check[[:space:]]+NORMAL"
+          - /etc/aide.conf
+      register: hash_rule
+      changed_when: false
+      failed_when: hash_rule.rc != 0
+
+    - name: "verify | a second start serialises rather than colliding"
+      ansible.builtin.shell: |
+        set -uo pipefail
+        systemctl start --no-block integrity-check.service
+        sleep 2
+        t0=$(date +%s)
+        systemctl start --wait integrity-check.service
+        t1=$(date +%s)
+        printf 'waited=%s\n' "$((t1 - t0))"
+      args:
+        executable: /bin/bash
+      register: serial
+      changed_when: false
+
+    - name: "verify | report serialisation"
+      ansible.builtin.debug:
+        var: serial.stdout

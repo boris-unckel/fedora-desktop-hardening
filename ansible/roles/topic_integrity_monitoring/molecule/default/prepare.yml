@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Component prepare: establish the substrate and the foundation tier. The
+# shared play installs SELinux tooling, flips the node to enforcing, maps the
+# connection user to staff_u, and applies the four foundation roles in order.
+- name: Prepare the substrate and foundation tier
+  ansible.builtin.import_playbook: ../../../../molecule/shared/foundation_prepare.yml
+
+# Deliberately no baseline seeding here. Unlike a topic that expects an
+# operator-owned database to exist already, this role takes the FIRST baseline
+# itself when none is present, and refuses to refresh an existing one. Seeding
+# in prepare would hide exactly that behaviour from the test.

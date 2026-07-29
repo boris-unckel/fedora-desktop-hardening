@@ -1,0 +1,297 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Role: topic_integrity_monitoring
+# Pattern: Probe -> Modify -> Verify
+# Idempotent: yes on every stage except the acceptance step, which always does
+# work by design (see README.md "Idempotence notes").
+#
+# Modify ordering invariant:
+#   1. Publish and load the CIL module. It must be in policy before the timer
+#      first fires, so the first check does not trip on the gap it closes.
+#   2. Install the wrapper, then the units, then the optional banner.
+#   3. Relabel everything (handler). A unit file without systemd_unit_file_t
+#      is not loaded at all.
+#   4. Invert the AIDE scope -- COMPUTED on the target, never shipped.
+#   5. Ensure the acceptance-directory rule OUTSIDE the marker-guarded block,
+#      so a re-apply on a host that already carries the block still gets it.
+#   6. Retire the superseded AIDE timer; the AIDE service itself stays as the
+#      inner unit.
+#   7. daemon-reload, enable the aggregate timer.
+#   8. Take the first baseline only when none exists. Never refresh an
+#      existing one -- acceptance is a reviewed, manual act.
+
+- name: "topic_im | preflight"
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - topic_integrity_monitoring
+    - preflight
+
+- name: "topic_im | probe (read-only)"
+  ansible.builtin.script: "files/probe.sh"
+  changed_when: false
+  failed_when: false
+  register: probe_result
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  tags:
+    - topic_integrity_monitoring
+    - probe
+
+- name: "topic_im | report probe"
+  ansible.builtin.debug:
+    var: probe_result.stdout_lines
+  tags:
+    - topic_integrity_monitoring
+    - probe
+
+- name: "topic_im | apply configuration"
+  block:
+
+    # --- 1. SELinux policy module -------------------------------------------
+    - name: "topic_im | CIL publish directory present"
+      ansible.builtin.file:
+        path: "{{ topic_im_cil_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "topic_im | install CIL source"
+      ansible.builtin.copy:
+        src: "{{ topic_im_cil_module_name }}.cil"
+        dest: "{{ topic_im_cil_dir }}/{{ topic_im_cil_module_name }}.cil"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      notify:
+        - "topic_im cil changed"
+
+    - name: "topic_im | load the policy module before anything can run"
+      ansible.builtin.meta: flush_handlers
+
+    # --- 2. Wrapper, units, banner ------------------------------------------
+    - name: "topic_im | install wrapper"
+      ansible.builtin.copy:
+        src: "integrity-check"
+        dest: "{{ topic_im_wrapper_dir }}/integrity-check"
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+      notify:
+        - "topic_im wrapper changed"
+
+    - name: "topic_im | install unit files"
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "{{ topic_im_unit_dir }}/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - "integrity-check.service"
+        - "integrity-check.timer"
+        - "aide-check.service"
+        - "aide-init.service"
+      become: true
+      notify:
+        - "topic_im unit changed"
+
+    - name: "topic_im | install shell banner"
+      ansible.builtin.copy:
+        src: "aide-alert.sh"
+        dest: "{{ topic_im_profile_d_dir }}/aide-alert.sh"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      when: topic_im_install_alert_banner | bool
+      notify:
+        - "topic_im banner changed"
+
+    # --- 3. Acceptance directory --------------------------------------------
+    - name: "topic_im | acceptance directory present"
+      ansible.builtin.file:
+        path: "{{ topic_im_accept_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    # Seeded once and never overwritten. Re-seeding on every apply would
+    # silently adopt whatever drift accumulated since the last run, which is
+    # exactly the self-confirming behaviour this topic exists to avoid. The
+    # only entry is the canonical false positive: a path resolving onto a
+    # filesystem that cannot carry SELinux labels at all.
+    - name: "topic_im | seed accepted-context.txt (never overwritten)"
+      ansible.builtin.copy:
+        dest: "{{ topic_im_accept_dir }}/accepted-context.txt"
+        force: false
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # integrity-check: accepted SELinux context deviations
+          #
+          # Deliberately almost empty. Context drift is a defect, not an
+          # inventory -- it disappears by being fixed (restorecon -F), not by
+          # being accepted. `integrity-check accept` never refreshes this file.
+          #
+          # Only proven false positives belong here.
+
+          # A filesystem without SELinux label support cannot hold a context,
+          # so restorecon would want to relabel it forever and could never
+          # report success.
+          /boot/grub2/grub.cfg
+      become: true
+
+    # --- 4. AIDE scope inversion, computed on the target ---------------------
+    #
+    # The whole-tree rules are commented out IN PLACE rather than deleted, so a
+    # future stock configuration update stays diffable. The regexp is Python
+    # `re`, not POSIX: `\s` is required, `[[:space:]]` would be read as a
+    # character class and match nothing here.
+    #
+    # The trailing `\s` also keeps `/lib` from matching the `/lib64` rule.
+    - name: "topic_im | back up AIDE configuration before inverting"
+      ansible.builtin.copy:
+        src: "{{ topic_im_aide_conf }}"
+        dest: "{{ topic_im_aide_conf }}.bak-preinvert"
+        remote_src: true
+        force: false
+        owner: root
+        group: root
+        mode: "0600"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_im | comment out package-covered trees"
+      ansible.builtin.replace:
+        path: "{{ topic_im_aide_conf }}"
+        regexp: '^({{ item | regex_escape }}\s+(?:NORMAL|CONTENT))\s*$'
+        replace: '# ic-inverted (covered by the package verification pass): \1'
+        validate: "aide --config-check --config %s"
+      loop: "{{ topic_im_inverted_trees }}"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_im | managed block re-adding the non-package-managed trees"
+      ansible.builtin.blockinfile:
+        path: "{{ topic_im_aide_conf }}"
+        marker: "# {mark} integrity-monitoring scope inversion (managed)"
+        validate: "aide --config-check --config %s"
+        block: |
+          {% for t in topic_im_readded_trees %}
+          {{ t }}  NORMAL
+          {% endfor %}
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    # --- 5. Acceptance-list rule, deliberately OUTSIDE the managed block -----
+    #
+    # The catch-all rule for the configuration tree is permissions-only. A
+    # content edit to an acceptance list -- the direct route to suppressing
+    # findings for anyone who already knows the check -- would be invisible
+    # under it. A dedicated rule wins by deepest match.
+    #
+    # Outside the block on purpose: a gate that only fires in the "block is
+    # missing" branch would never deliver this rule to a host that already
+    # carries the block.
+    - name: "topic_im | acceptance lists are hashed, not merely permission-checked"
+      ansible.builtin.lineinfile:
+        path: "{{ topic_im_aide_conf }}"
+        regexp: '^{{ topic_im_accept_dir | regex_escape }}\s+NORMAL\s*$'
+        line: "{{ topic_im_accept_dir }}  NORMAL"
+        insertafter: EOF
+        validate: "aide --config-check --config %s"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    # --- 6. Retire the superseded timer -------------------------------------
+    - name: "topic_im | check for the superseded AIDE timer"
+      ansible.builtin.stat:
+        path: "{{ topic_im_unit_dir }}/aide-check.timer"
+      register: old_timer
+      become: true
+
+    - name: "topic_im | disable the superseded AIDE timer"
+      ansible.builtin.systemd:
+        name: "aide-check.timer"
+        enabled: false
+        state: stopped
+      become: true
+      when: old_timer.stat.exists
+      failed_when: false
+
+    - name: "topic_im | remove the superseded AIDE timer"
+      ansible.builtin.file:
+        path: "{{ topic_im_unit_dir }}/aide-check.timer"
+        state: absent
+      become: true
+      when: old_timer.stat.exists
+      notify:
+        - "topic_im unit changed"
+
+    # --- 7. Reload and enable ------------------------------------------------
+    - name: "topic_im | apply pending relabel and reload before enabling"
+      ansible.builtin.meta: flush_handlers
+
+    - name: "topic_im | enable the aggregate timer"
+      ansible.builtin.systemd:
+        name: "integrity-check.timer"
+        enabled: true
+        state: started
+        daemon_reload: true
+      become: true
+
+    # --- 8. First baseline only ---------------------------------------------
+    - name: "topic_im | is there a baseline at all?"
+      ansible.builtin.stat:
+        path: "{{ topic_im_aide_db }}"
+      register: db_stat
+      become: true
+
+    # Runs ONLY when no baseline exists. An existing baseline is never
+    # refreshed from here: acceptance is a reviewed, manual act, and an
+    # automated refresh would adopt whatever the host currently looks like.
+    - name: "topic_im | take the first baseline"
+      ansible.builtin.command:
+        argv:
+          - "{{ topic_im_wrapper_dir }}/integrity-check"
+          - accept
+      become: true
+      when: not db_stat.stat.exists
+      changed_when: true
+
+    - name: "topic_im | acceptance is manual from here on"
+      ansible.builtin.debug:
+        msg: >
+          A baseline already exists and was left untouched. Adopting current
+          state as the new reference is a reviewed, manual step:
+          `sudo {{ topic_im_wrapper_dir }}/integrity-check accept`.
+      when: db_stat.stat.exists
+
+  tags:
+    - topic_integrity_monitoring
+    - apply
+
+- name: "topic_im | verify"
+  ansible.builtin.script: "files/verify.sh"
+  changed_when: false
+  register: verify_result
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  tags:
+    - topic_integrity_monitoring
+    - verify
+
+- name: "topic_im | report verify"
+  ansible.builtin.debug:
+    var: verify_result.stdout_lines
+  tags:
+    - topic_integrity_monitoring
+    - verify

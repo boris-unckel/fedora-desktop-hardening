@@ -21,9 +21,12 @@
     # Each topic role self-verifies during apply, so the cumulative converge
     # only carries topics whose verify.sh is green on a headless VM. Two
     # otherwise-cloud-testable topics are held out as documented open items,
-    # not included here: topic_cups and topic_aide (each clean except an
-    # avc_clean count still being classified). Session and Wayland-session
-    # topics are excluded by design.
+    # not included here: topic_cups (clean except an avc_clean count still
+    # being classified) and topic_integrity_monitoring (its verify runs the
+    # full four-check pass and a second serialisation start, which is too
+    # long-running to carry inside a cumulative converge; it has its own
+    # component scenario). Session and Wayland-session topics are excluded by
+    # design.
     system_tier_topics:
       # P1 — whole-host / boot-failure class, applied first.
       - topic_kernel_hardening

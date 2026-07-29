@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[Unit]
+# Outer unit. Aggregates four checks into one exit status that the optional
+# shell banner consumes.
+#
+# The ExecStart carries bin_t, so PID 1 starts it as unconfined_service_t and
+# no type-transition to a confined tool domain applies. The AIDE check
+# therefore does not run here — the wrapper starts aide-check.service instead,
+# so PID 1 execs the binary and the stock init_t -> aide_t transition holds.
+Description=Aggregated file-integrity check
+Documentation=man:rpm(8) man:aide(1) man:restorecon(8)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/integrity-check check
+Nice=19
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=30min

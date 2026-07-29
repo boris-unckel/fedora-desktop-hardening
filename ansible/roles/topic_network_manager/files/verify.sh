@@ -34,6 +34,17 @@ readonly EXPECTED_NMCLI_STATE="connected"
 readonly REQUIRED_PACKAGE="NetworkManager"
 readonly EXPECTED_CIL_MODULE="nnp_network_manager"
 
+# Paths whose SELinux context is asserted against file_contexts. A directory
+# entry also covers every path inside it. Files written into a drop-in
+# directory take that directory's type at creation time; only a restorecon
+# pass assigns the type that file_contexts maps for the path, which for most
+# units is a service-specific *_unit_file_t rather than the generic
+# systemd_unit_file_t. Nothing in the unit's runtime behaviour reveals the
+# difference, so the comparison has to be explicit.
+readonly -a CONTEXT_PATHS=(
+  "/etc/systemd/system/NetworkManager.service.d"
+)
+
 declare -i fail_state=0
 
 require_tool() {
@@ -215,6 +226,71 @@ verify_avc_clean() {
   fi
 }
 
+# Expected context for one path, honouring the file-type qualifier carried by
+# file_contexts entries. A `--` entry matches regular files only, so a
+# directory or a symlink at the same path resolves through a different rule;
+# without the mode hint the comparison tests against the wrong expectation.
+#
+# The type comes from `stat`, not from `[[ -d ]]`/`[[ -L ]]`: those operators
+# report false when the path cannot be stat'ed, which would silently fall
+# through to the regular-file rule and produce a plausible wrong answer.
+# LC_ALL=C because `%F` is localised.
+expected_context() {
+  local path="$1" mode ftype
+  ftype=$(LC_ALL=C stat -c '%F' "${path}" 2>/dev/null) || return 1
+  case "${ftype}" in
+    *"symbolic link"*) mode="link" ;;
+    "directory") mode="dir" ;;
+    *) mode="file" ;;
+  esac
+  matchpathcon -m "${mode}" "${path}" 2>/dev/null | sed 's#.*\t##'
+}
+
+# Compares the full context, including the SELinux user field. `restorecon -n`
+# compares the type alone, so a path differing only in the user field stays
+# invisible to it and to any check built on it.
+context_matches() {
+  local path="$1" expected actual
+  actual=$(stat -c '%C' "${path}" 2>/dev/null || true)
+  expected=$(expected_context "${path}") || expected=""
+  if [[ -z "${expected}" || -z "${actual}" ]]; then
+    report_fail "selinux_context" "${path}: context not resolvable"
+    return 1
+  fi
+  if [[ "${actual}" != "${expected}" ]]; then
+    report_fail "selinux_context" \
+      "${path}: expected=${expected} actual=${actual}"
+    return 1
+  fi
+  return 0
+}
+
+verify_selinux_context() {
+  local path child drift=0 checked=0
+  if ! command -v matchpathcon >/dev/null 2>&1; then
+    report_skip "selinux_context" "matchpathcon not available"
+    return
+  fi
+  for path in "${CONTEXT_PATHS[@]}"; do
+    if [[ ! -e "${path}" ]]; then
+      report_fail "selinux_context" "${path}: absent"
+      drift=$((drift + 1))
+      continue
+    fi
+    checked=$((checked + 1))
+    context_matches "${path}" || drift=$((drift + 1))
+    [[ -d "${path}" ]] || continue
+    for child in "${path}"/*; do
+      [[ -e "${child}" ]] || continue
+      checked=$((checked + 1))
+      context_matches "${child}" || drift=$((drift + 1))
+    done
+  done
+  if [[ "${drift}" -eq 0 ]]; then
+    report_ok "selinux_context" "${checked} paths match file_contexts"
+  fi
+}
+
 main() {
   require_tool awk
   require_tool grep
@@ -234,6 +310,7 @@ main() {
   verify_connectivity
   verify_cil_module
   verify_avc_clean
+  verify_selinux_context
   exit "${fail_state}"
 }
 

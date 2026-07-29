@@ -48,6 +48,23 @@
   become_flags: "-r sysadm_r -t sysadm_t"
   listen: "topic_im wrapper changed"
 
+- name: "topic_im | restorecon acceptance directory"
+  # The directory is created by this role and no later step revisits it, so
+  # without this handler it keeps the context it inherited from /etc at
+  # creation time. -R also covers the seed file and any acceptance list the
+  # wrapper has written since; -F resets the SELinux user field, which the
+  # type-only comparison of `restorecon -n` would never report -- including
+  # the comparison this very topic runs as its fourth check.
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-Fv"
+      - "-R"
+      - "{{ topic_im_accept_dir }}"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_im accept dir changed"
+
 - name: "topic_im | restorecon banner"
   ansible.builtin.command:
     argv:

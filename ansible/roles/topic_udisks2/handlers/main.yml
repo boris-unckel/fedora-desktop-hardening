@@ -2,9 +2,33 @@
 ---
 # Handlers for topic_udisks2.
 #
-# A change to any of the three drop-in files triggers a daemon-reload
-# followed by a unit restart. The two handlers are wired so that the
-# reload always runs before the restart on the same event chain.
+# A change to any of the three drop-in files triggers a restorecon, a
+# daemon-reload, and a unit restart. The handlers are wired so that they
+# always run in that order on the same event chain.
+
+- name: "topic_udisks2 | restorecon udisks2 drop-ins"
+  # -R so the drop-in directory itself is relabelled, not only the files
+  # inside it. The directory is created by this role and takes its context
+  # from the parent directory at creation time; no later step revisits it.
+  # -F additionally resets the SELinux user field. Without it every path
+  # keeps the user identity of whoever applied the role, and that drift is
+  # invisible to `restorecon -n`, which compares the type alone.
+  #
+  # Targeted policy ships no service-specific unit-file type for this unit,
+  # so the expected type here is the generic systemd_unit_file_t that the
+  # files already inherit. The relabel is still required: the user field
+  # needs resetting, and the step stays correct if policy later adds a
+  # specific type for this path.
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-F"
+      - "-v"
+      - "-R"
+      - "{{ topic_udisks2_dropin_dir }}"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_udisks2 dropin changed"
 
 - name: "topic_udisks2 | daemon-reload"
   ansible.builtin.systemd:

@@ -24,12 +24,19 @@
   listen: "topic_avahi_daemon cil changed"
 
 - name: "topic_avahi_daemon | restorecon avahi-daemon drop-ins"
+  # -R so the drop-in directory itself is relabelled, not only the files
+  # inside it. The directory is created by this role and takes its context
+  # from the parent directory at creation time; no later step revisits it.
+  # -F additionally resets the SELinux user field. Without it every path
+  # keeps the user identity of whoever applied the role, and that drift is
+  # invisible to `restorecon -n`, which compares the type alone.
   ansible.builtin.command:
     argv:
       - restorecon
+      - "-F"
       - "-v"
-      - "{{ topic_avahi_daemon_dropin_dir }}/99-hardening.conf"
-      - "{{ topic_avahi_daemon_dropin_dir }}/99-nnp.conf"
+      - "-R"
+      - "{{ topic_avahi_daemon_dropin_dir }}"
   become: true
   become_flags: "-r sysadm_r -t sysadm_t"
   listen: "topic_avahi_daemon dropin changed"

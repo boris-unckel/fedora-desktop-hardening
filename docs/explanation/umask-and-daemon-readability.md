@@ -67,3 +67,4 @@ Edge cases the mitigation does not cover:
 ## See also
 
 - [UMASK 0027](../reference/foundation/umask.md) — The Foundation layer that establishes the system-wide UMASK from which this trap follows.
+- [Drop-in files and SELinux context inheritance](dropin-selinux-context-inheritance.md) — The SELinux sibling of this trap. The same deploy step leaves the file with the type of its parent directory instead of the type its path maps to; fixing the mode does not fix the label.

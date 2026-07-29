@@ -42,7 +42,7 @@ The Phase-A baseline ships exactly one drop-in INI file under `/etc/systemd/syst
 |---|---|
 | `99-hardening.conf` | Phase-A namespace-default baseline (`Protect*` family with two opt-outs, plus `PrivateTmp=`, `LockPersonality=`, `RestrictRealtime=`, `RestrictSUIDSGID=`, `SystemCallArchitectures=`). |
 
-Stock targeted policy on Fedora 44 ships **no** service-specific `tuned_unit_file_t` subtype for the drop-in directory; the drop-in carries the generic `systemd_unit_file_t` label, consistent with most topics in this tree.
+Targeted policy on Fedora 44 defines a `tuned_unit_file_t` type, but `file_contexts` carries no path pattern that assigns it, so the drop-in and its directory keep the generic `systemd_unit_file_t` they inherit at creation. The role still relabels with `restorecon -F` to normalise the SELinux user field; see the artefact section below.
 
 **No second or third artefact.** Unlike the sibling hardware-class topics (`alsa-state`, `rngd`, `smartd`, `thermald`), this topic ships **no** `99-nnp.conf` and **no** `99-process-restrict.conf`. The reasons are stated as positive design claims: the daemon's data path includes sysctl and cgroup writes that the namespace-default baseline must accommodate via the two opt-outs documented under §"`99-hardening.conf`" below, and a Python-runtime daemon's mmap-write-execute requirement under `MemoryDenyWriteExecute=yes` has not been validated for this topic — the deferred process-internal kernel-restriction layer is therefore not part of the end-state documented here.
 
@@ -104,7 +104,9 @@ The single shipping artefact is written with mode `0644`, owner `root`, group `r
 |---|---|---|---|
 | `/etc/systemd/system/tuned.service.d/99-hardening.conf` | `0644` | `root:root` | `systemd_unit_file_t` |
 
-Stock targeted policy on Fedora 44 ships **no** service-specific subtype for the drop-in directory; the drop-in carries the generic `systemd_unit_file_t` label that `init_t → systemd_unit_file_t : file create` resolves to. The role's `restorecon` after `ansible.builtin.copy` is a defence-in-depth reflex that fires on file change; on a correctly installed file the call is a no-op. The role's preflight stage runs `matchpathcon /etc/systemd/system/tuned.service.d/99-hardening.conf` and asserts the result resolves to `systemd_unit_file_t` as a fail-fast gate before the install task runs.
+Targeted policy on Fedora 44 defines a `tuned_unit_file_t` type, but `file_contexts` carries no path pattern that assigns it: no entry matches `/usr/lib/systemd/system/tuned*`, so the `/etc/systemd/system` → `/usr/lib/systemd/system` equivalency resolves to nothing more specific than the generic rule. The expected type for the drop-in directory and for every file inside it is therefore the `systemd_unit_file_t` they inherit at creation, and `matchpathcon` confirms it. No `type_transition` to a `*_unit_file_t` exists for PID 1.
+
+The role runs `restorecon -F -v -R` on the drop-in directory anyway. The call is a no-op on the type, but `-F` normalises the SELinux user field, which otherwise keeps the identity of whoever applied the role and stays invisible to the type-only comparison of `restorecon -n`. The step also remains correct if a future policy release adds a mapping for this path. See [Drop-in files and SELinux context inheritance](../../explanation/dropin-selinux-context-inheritance.md).
 
 ## Verification
 

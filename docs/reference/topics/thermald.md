@@ -141,7 +141,9 @@ All three shipping artefacts are written with mode `0644`, owner `root`, group `
 | `/etc/systemd/system/thermald.service.d/99-nnp.conf` | `0644` | `root:root` | `systemd_unit_file_t` |
 | `/etc/systemd/system/thermald.service.d/99-process-restrict.conf` | `0644` | `root:root` | `systemd_unit_file_t` |
 
-Stock targeted policy on Fedora 44 ships **no** service-specific subtype for thermald drop-ins, consistent with the absence of a `thermald_t` runtime domain. The drop-in files carry the generic `systemd_unit_file_t` label that `init_t → systemd_unit_file_t : file create` resolves to. The role's `restorecon` after `ansible.builtin.copy` is what triggers the relabel from the install-time default to the generic unit-file type.
+Targeted policy on Fedora 44 defines a `thermald_unit_file_t` type, but `file_contexts` carries no path pattern that assigns it: no entry matches `/usr/lib/systemd/system/thermald*`, so the `/etc/systemd/system` → `/usr/lib/systemd/system` equivalency resolves to nothing more specific than the generic rule. The expected type for the drop-in directory and for every file inside it is therefore the `systemd_unit_file_t` they inherit at creation, and `matchpathcon` confirms it. No `type_transition` to a `*_unit_file_t` exists for PID 1.
+
+The role runs `restorecon -F -v -R` on the drop-in directory anyway. The call is a no-op on the type, but `-F` normalises the SELinux user field, which otherwise keeps the identity of whoever applied the role and stays invisible to the type-only comparison of `restorecon -n`. The step also remains correct if a future policy release adds a mapping for this path. See [Drop-in files and SELinux context inheritance](../../explanation/dropin-selinux-context-inheritance.md).
 
 ## Verification
 

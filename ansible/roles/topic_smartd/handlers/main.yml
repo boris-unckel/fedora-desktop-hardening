@@ -6,8 +6,9 @@
 #   "topic_smartd cil changed"  — fires on a change to the CIL source file.
 #                                  Triggers semodule install under sysadm_r.
 #   "topic_smartd dropin changed" — fires on a change to any of the three
-#                                  drop-in files. Triggers daemon-reload
-#                                  followed by a unit restart.
+#                                  drop-in files. Triggers restorecon,
+#                                  daemon-reload, and a unit restart, in
+#                                  that order.
 
 - name: "topic_smartd | semodule install nnp_smartd"
   ansible.builtin.command:
@@ -20,6 +21,30 @@
   become: true
   become_flags: "-r sysadm_r -t sysadm_t"
   listen: "topic_smartd cil changed"
+
+- name: "topic_smartd | restorecon smartd drop-ins"
+  # -R so the drop-in directory itself is relabelled, not only the files
+  # inside it. The directory is created by this role and takes its context
+  # from the parent directory at creation time; no later step revisits it.
+  # -F additionally resets the SELinux user field. Without it every path
+  # keeps the user identity of whoever applied the role, and that drift is
+  # invisible to `restorecon -n`, which compares the type alone.
+  #
+  # Targeted policy ships no service-specific unit-file type for this unit,
+  # so the expected type here is the generic systemd_unit_file_t that the
+  # files already inherit. The relabel is still required: the user field
+  # needs resetting, and the step stays correct if policy later adds a
+  # specific type for this path.
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-F"
+      - "-v"
+      - "-R"
+      - "{{ topic_smartd_dropin_dir }}"
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  listen: "topic_smartd dropin changed"
 
 - name: "topic_smartd | daemon-reload"
   ansible.builtin.systemd:

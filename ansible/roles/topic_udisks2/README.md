@@ -39,7 +39,8 @@ The role does **not** depend on `foundation_selinux_cil_bootstrap` (Layer 2). It
 ## Idempotence notes
 
 - `ansible.builtin.copy` is idempotent on byte-for-byte content match. The three drop-ins are pushed verbatim from `files/`.
-- The `daemon-reload` and `restart udisks2` handlers are wired through a single notification name (`topic_udisks2 dropin changed`) and fire only on file change.
+- The `restorecon`, `daemon-reload`, and `restart udisks2` handlers are wired through a single notification name (`topic_udisks2 dropin changed`) and fire only on file change, in that order.
+- The `restorecon -F -v -R` handler relabels the drop-in directory and its contents. Targeted policy maps no service-specific unit-file type for this path, so the call is a no-op on the type; `-F` still normalises the SELinux user field, which would otherwise record whoever applied the role.
 - The live-state probe (`MainPID` read, SELinux-domain read, AVC count) is read-only and reports without flipping state.
 - The `rescue:` block on the modify `block:` does **not** auto-rollback. A drift detected by verify is reported, not silently corrected. The three-stage rollback sequence is operator-driven and is documented in the topic Reference.
 - On a correctly applied host, `--check` reports zero changes. Stated as a claim, not a guarantee.

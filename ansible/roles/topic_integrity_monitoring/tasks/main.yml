@@ -121,6 +121,8 @@
         group: root
         mode: "0755"
       become: true
+      notify:
+        - "topic_im accept dir changed"
 
     # Seeded once and never overwritten. Re-seeding on every apply would
     # silently adopt whatever drift accumulated since the last run, which is
@@ -148,6 +150,8 @@
           # report success.
           /boot/grub2/grub.cfg
       become: true
+      notify:
+        - "topic_im accept dir changed"
 
     # --- 4. AIDE scope inversion, computed on the target ---------------------
     #

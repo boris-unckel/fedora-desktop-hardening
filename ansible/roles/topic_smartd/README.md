@@ -41,7 +41,8 @@ The drop-in bodies and the CIL body are not exposed as tunables. Operators who n
 
 - `ansible.builtin.copy` is idempotent on byte-for-byte content match. The three drop-ins and the CIL source are pushed verbatim from `files/`.
 - The `semodule -X 400 -i` install handler fires only on a change to the CIL source. `semodule` itself overwrites a same-priority module idempotently; a re-run of the handler against an unchanged source is a no-op.
-- The `daemon-reload` and `restart smartd` handlers are wired through the `topic_smartd dropin changed` notification name and fire only on a drop-in file change.
+- The `restorecon`, `daemon-reload`, and `restart smartd` handlers are wired through the `topic_smartd dropin changed` notification name and fire only on a drop-in file change, in that order.
+- The `restorecon -F -v -R` handler relabels the drop-in directory and its contents. Targeted policy maps no service-specific unit-file type for this path, so the call is a no-op on the type; `-F` still normalises the SELinux user field, which would otherwise record whoever applied the role.
 - The `meta: flush_handlers` after the CIL source push enforces the load-before-deploy invariant for `99-nnp.conf`.
 - The live-state probe (`MainPID` read, SELinux-domain read, AVC count) is read-only.
 - The `rescue:` block on the modify `block:` does **not** auto-rollback. A drift detected by verify is reported, not silently corrected. The three-stage rollback sequence is operator-driven and is documented in the topic Reference.

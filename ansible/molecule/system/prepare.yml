@@ -104,7 +104,8 @@
       when: (scoring_tools.rc | default(1)) == 0
 
 # Stage 2: the shared foundation substrate (includes the reboot to enforcing).
-# topic_aide is held out of the system tier (see converge.yml), so its
-# operator-precondition seed is not needed here.
+# topic_integrity_monitoring is held out of the system tier (see converge.yml).
+# No baseline seed is needed here in any case: that role takes the first
+# baseline itself when none exists.
 - name: Prepare the substrate and foundation tier
   ansible.builtin.import_playbook: ../shared/foundation_prepare.yml

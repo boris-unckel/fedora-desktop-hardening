@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 ---
 galaxy_info:
-  role_name: topic_aide
-  description: "AIDE integrity-monitor hardening (operator-supplied oneshot service plus daily timer plus topic-owned one-rule CIL plus optional push-banner)."
+  role_name: topic_integrity_monitoring
+  description: "File-integrity monitoring: package verification, unowned sweep, scope-reduced AIDE, SELinux context dry-run, behind a single timer."
   license: "MIT"
   min_ansible_version: "2.14"
   platforms:

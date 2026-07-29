@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[Unit]
+# The single trigger. aide-check.service keeps no timer of its own; it runs
+# only as a nested step of the aggregate check. One entry point means
+# systemd's job engine serialises concurrent starts, so two AIDE runs cannot
+# collide on the report-file lock.
+Description=Daily timer for the aggregated file-integrity check
+Documentation=man:systemd.timer(5)
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30m
+# Deliberate on a host that is not powered continuously: guarantees the
+# catch-up run. It is also why the single-trigger design matters, because the
+# catch-up lands in the post-boot window where an update routine tends to run.
+Persistent=yes
+
+[Install]
+WantedBy=timers.target

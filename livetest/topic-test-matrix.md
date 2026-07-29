@@ -95,7 +95,7 @@ regression-selection rule, because every topic depends on the Foundation.
 | `topic_dbus_broker` | system D-Bus broker | `system_dbusd_t`; NNP; `nnp_dbus_broker.cil`; dbus-send round-trip | P1 |
 | `topic_kernel_hardening` | sysctl, module blacklist, coredump | sysctl keys; modules blacklisted; command line (reboot-gated); coredump off | P1 |
 | `topic_network_manager` | network daemon, namespace + NNP | `NetworkManager_t`; NNP; address families; `nnp_network_manager.cil`; nmcli connectivity | P1 |
-| `topic_aide` | file-integrity timer + scope | `aide_t`; timer active and enabled; AIDE database present; `aide_extras.cil` | P2 |
+| `topic_integrity_monitoring` | four-check integrity model | `aide_t` via the nested unit; single timer active and enabled; scope inversion marker; scope-reduced AIDE database; three acceptance lists; hash rule for the acceptance directory; second start serialises; `aide_extras.cil` | P2 |
 | `topic_avahi_daemon` | mDNS daemon, namespace + NNP | `avahi_t`; NNP and MDWE; full Protect* set; mDNS resolve round-trip | P2 |
 | `topic_chronyd` | time daemon, namespace + NNP | `chronyd_t`; NNP; chronyc tracking; port-123 bind absence (negative) | P2 |
 | `topic_cron` | cron daemon + job domain | `crond_t`; NNP; cron job spawns into `system_cronjob_t` (inter-domain) | P2 |

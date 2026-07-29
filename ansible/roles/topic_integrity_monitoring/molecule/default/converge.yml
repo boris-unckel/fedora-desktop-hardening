@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# Converge: apply the single topic under test. The foundation substrate is
+# established by prepare.yml; the role's meta dependencies re-assert the
+# foundation idempotently. Privileged tasks run in the role-switched sysadm_t
+# context, matching the operator administration model.
+- name: Converge topic_integrity_monitoring
+  hosts: all
+  gather_facts: true
+  roles:
+    - role: topic_integrity_monitoring

@@ -160,7 +160,9 @@ All four shipping artefacts are written with mode `0644`, owner `root`, group `r
 | `/etc/systemd/system/rngd.service.d/99-process-restrict.conf` | `0644` | `root:root` | `rngd_unit_file_t` |
 | `/usr/local/share/selinux/nnp_rngd.cil` | `0644` | `root:root` | `usr_t` |
 
-Stock targeted policy on Fedora 44 or later carries a service-specific subtype `rngd_unit_file_t` and a type-transition `init_t → rngd_unit_file_t : file create` for files under `/etc/systemd/system/rngd.service.d/`. The role's `restorecon` after `ansible.builtin.copy` is what triggers the relabel from the install-time default to the unit-specific type.
+Stock targeted policy on Fedora 44 or later maps a service-specialised type for these files: `file_contexts` carries `/usr/lib/systemd/system/rngd.*` → `rngd_unit_file_t`, and the `/etc/systemd/system` → `/usr/lib/systemd/system` equivalency in `file_contexts.subs_dist` extends that mapping to the drop-in path under `/etc`. The drop-in *directory* is not covered by it — the entry is qualified with `--`, which matches regular files only — so the directory keeps the generic `systemd_unit_file_t`, which is its correct type.
+
+Nothing assigns the mapped type at creation time, and no `type_transition` to a `*_unit_file_t` exists for PID 1. A file written into the drop-in directory inherits that directory's `systemd_unit_file_t`, and the role's `restorecon -F -v -R` on the drop-in directory is what moves it to `rngd_unit_file_t`. The `-R` covers the directory itself, which this role creates and which no other step revisits; the `-F` additionally resets the SELinux user field, which a type-only comparison such as `restorecon -n` never reports. Without the relabel the merged unit still runs — systemd reads drop-ins regardless of label — but the hardening artefact keeps the wider generic type while the stock unit file beside it carries the narrower one. See [Drop-in files and SELinux context inheritance](../../explanation/dropin-selinux-context-inheritance.md).
 
 ## Verification
 

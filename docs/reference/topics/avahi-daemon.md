@@ -141,11 +141,14 @@ All three shipping artefacts are written with mode `0644`, owner `root`, group `
 
 | Path | Mode | Owner | SELinux type |
 |---|---|---|---|
-| `/etc/systemd/system/avahi-daemon.service.d/99-hardening.conf` | `0644` | `root:root` | `systemd_unit_file_t` |
-| `/etc/systemd/system/avahi-daemon.service.d/99-nnp.conf` | `0644` | `root:root` | `systemd_unit_file_t` |
+| `/etc/systemd/system/avahi-daemon.service.d/` | `0755` | `root:root` | `systemd_unit_file_t` |
+| `/etc/systemd/system/avahi-daemon.service.d/99-hardening.conf` | `0644` | `root:root` | `avahi_unit_file_t` |
+| `/etc/systemd/system/avahi-daemon.service.d/99-nnp.conf` | `0644` | `root:root` | `avahi_unit_file_t` |
 | `/usr/local/share/selinux/nnp_avahi_daemon.cil` | `0644` | `root:root` | `usr_t` |
 
-Stock targeted policy on Fedora 44 or later does not carry a specialised `*_unit_file_t` type for avahi-daemon; the parent directory's type-transition installs the generic `systemd_unit_file_t` for files written under `/etc/systemd/system/avahi-daemon.service.d/`. The role's `restorecon` after `ansible.builtin.copy` is what triggers the relabel from the install-time default (typically `staff_u:object_r:systemd_unit_file_t` when the operator drops the file from a `staff_t` shell) to the canonical type. Without the relabel the merged unit still runs because systemd reads merged units regardless of label, but `ls -lZ` shows the wrong user and a future audit flags it.
+Stock targeted policy on Fedora 44 or later does carry a service-specialised type for these files. `file_contexts` maps `/usr/lib/systemd/system/avahi.*` to `avahi_unit_file_t`, and the `/etc/systemd/system` → `/usr/lib/systemd/system` equivalency in `file_contexts.subs_dist` extends that mapping to the drop-in path under `/etc`. The drop-in *directory* is not covered by the mapping — the entry is qualified with `--`, which matches regular files only — so it keeps the generic `systemd_unit_file_t`, which is its correct type.
+
+Nothing assigns the mapped type at creation time. A file written into the drop-in directory inherits that directory's `systemd_unit_file_t`, and the role's `restorecon -F -v -R` on the drop-in directory is what moves it to `avahi_unit_file_t`. The `-R` covers the directory itself, which this role creates and which no other step revisits; the `-F` additionally resets the SELinux user field, which a type-only comparison such as `restorecon -n` never reports. Without the relabel the merged unit still runs — systemd reads drop-ins regardless of label — but the hardening artefact keeps the wider generic type while the stock unit file beside it carries the narrower one. See [Drop-in files and SELinux context inheritance](../../explanation/dropin-selinux-context-inheritance.md).
 
 ## Verification
 

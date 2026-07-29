@@ -23,7 +23,7 @@ The unit `plymouth-start.service` is shipped by the `plymouth` package and is th
 | User / group | not set on the unit (daemon runs as root throughout its short lifecycle) |
 | Daemon binary | `/usr/bin/plymouthd` |
 | SELinux domain | `plymouthd_t` |
-| Drop-in directory SELinux type | `systemd_unit_file_t` |
+| Drop-in file SELinux type | `systemd_unit_file_t` (no mapped subtype; directory identical) |
 | Runtime directory | `/run/plymouth/` (daemon-self-managed; no `RuntimeDirectory=` in stock unit) |
 
 The vendor unit ships **no** `User=`, **no** `Group=`, **no** `RuntimeDirectory=`, and **no** `StateDirectory=`. The daemon manages its own runtime path under `/run/plymouth/` (its own pid-file, its own socket).
@@ -167,7 +167,9 @@ The module is loaded at priority 400 via `semodule -X 400 -i /usr/local/share/se
 
 All four shipping artefacts are written with mode `0644`, owner `root`, group `root`. The role's modify stage sets the mode and ownership explicitly per file rather than relying on the operator UMASK. The explicit `chmod 0644` is the standard reflex established in [UMASK 0027](../foundation/umask.md).
 
-The drop-in directory `/etc/systemd/system/plymouth-start.service.d/` and the three drop-in files inside it carry the SELinux type `systemd_unit_file_t`. Stock targeted policy on Fedora 44 ships no specialised `*_unit_file_t` type for plymouth-start, so the parent directory's type-transition installs the generic `systemd_unit_file_t` type on each newly created file. The role's `restorecon` after `ansible.builtin.copy` is what triggers the relabel from the install-time default (typically `staff_u:object_r:systemd_unit_file_t` when the operator drops the file from a `staff_t` shell) to the canonical system-context label.
+Targeted policy on Fedora 44 defines a `plymouthd_unit_file_t` type, but `file_contexts` carries no path pattern that assigns it: no entry matches `/usr/lib/systemd/system/plymouth*`, so the `/etc/systemd/system` → `/usr/lib/systemd/system` equivalency resolves to nothing more specific than the generic rule. The expected type for the drop-in directory and for every file inside it is therefore the `systemd_unit_file_t` they inherit at creation, and `matchpathcon` confirms it. No `type_transition` to a `*_unit_file_t` exists for PID 1.
+
+The role runs `restorecon -F -v -R` on the drop-in directory anyway. The call is a no-op on the type, but `-F` normalises the SELinux user field, which otherwise keeps the identity of whoever applied the role and stays invisible to the type-only comparison of `restorecon -n`. The step also remains correct if a future policy release adds a mapping for this path. See [Drop-in files and SELinux context inheritance](../../explanation/dropin-selinux-context-inheritance.md).
 
 | Path | Mode | Owner | SELinux type |
 |---|---|---|---|

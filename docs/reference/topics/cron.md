@@ -33,7 +33,7 @@ The `cronie` package ships the daemon binary at `/usr/sbin/crond` (with `/usr/bi
 
 ### Four-artefact deploy profile
 
-The end-state ships three drop-in INI files under `/etc/systemd/system/crond.service.d/` (mode `0644 root:root`, label `systemd_unit_file_t`) plus one CIL module under `/usr/local/share/selinux/` (mode `0644 root:root`, label `usr_t`):
+The end-state ships three drop-in INI files under `/etc/systemd/system/crond.service.d/` (mode `0644 root:root`, label `crond_unit_file_t`) plus one CIL module under `/usr/local/share/selinux/` (mode `0644 root:root`, label `usr_t`):
 
 | File | Layer |
 |---|---|
@@ -42,7 +42,7 @@ The end-state ships three drop-in INI files under `/etc/systemd/system/crond.ser
 | `99-process-restrict.conf` | Process-internal kernel restrictions (MDWE, address-family restriction, additive plus subtractive `SystemCallFilter=` pair, one positive `SystemCallFilter=` carve-out for the cronjob-user-switch privilege-drop, three-cap `CapabilityBoundingSet=`). |
 | `nnp_crond.cil` | Topic-owned SELinux CIL module with two allow rules (boot-failure class plus confinement-leak class), loaded at priority 400. |
 
-Stock targeted policy on Fedora 44 ships **no** service-specific `crond_unit_file_t` subtype for the drop-in directory; the drop-ins carry the generic `systemd_unit_file_t` label, consistent with most topics in this tree (only `auditd` and `cups` carry a service-specialised `*_unit_file_t` type for their drop-in directories).
+Stock targeted policy on Fedora 44 does map a service-specialised type for these files: `file_contexts` carries `/usr/lib/systemd/system/crond.*` → `crond_unit_file_t`, and the `/etc/systemd/system` → `/usr/lib/systemd/system` equivalency extends it to the drop-in path. The drop-in *directory* keeps the generic `systemd_unit_file_t`, because the mapping entry is qualified with `--` and therefore matches regular files only.
 
 ### `99-hardening.conf`
 
@@ -157,12 +157,13 @@ The four shipping artefacts are written with mode `0644`, owner `root`, group `r
 
 | Path | Mode | Owner | SELinux type |
 |---|---|---|---|
-| `/etc/systemd/system/crond.service.d/99-hardening.conf` | `0644` | `root:root` | `systemd_unit_file_t` |
-| `/etc/systemd/system/crond.service.d/99-nnp.conf` | `0644` | `root:root` | `systemd_unit_file_t` |
-| `/etc/systemd/system/crond.service.d/99-process-restrict.conf` | `0644` | `root:root` | `systemd_unit_file_t` |
+| `/etc/systemd/system/crond.service.d/` | `0755` | `root:root` | `systemd_unit_file_t` |
+| `/etc/systemd/system/crond.service.d/99-hardening.conf` | `0644` | `root:root` | `crond_unit_file_t` |
+| `/etc/systemd/system/crond.service.d/99-nnp.conf` | `0644` | `root:root` | `crond_unit_file_t` |
+| `/etc/systemd/system/crond.service.d/99-process-restrict.conf` | `0644` | `root:root` | `crond_unit_file_t` |
 | `/usr/local/share/selinux/nnp_crond.cil` | `0644` | `root:root` | `usr_t` |
 
-The role's `restorecon` after `ansible.builtin.copy` is a defence-in-depth reflex that fires on file change; on a correctly installed file the call is a no-op. The role's preflight stage runs `matchpathcon /etc/systemd/system/crond.service.d/99-hardening.conf` and asserts the result resolves to `systemd_unit_file_t` as a fail-fast gate before the install task runs.
+Nothing assigns `crond_unit_file_t` at creation time: a file written into the drop-in directory inherits that directory's `systemd_unit_file_t`, and the role's `restorecon -F -v -R` on the drop-in directory is what moves it to the mapped type. The `-R` covers the directory itself, which this role creates and which no other step revisits; the `-F` additionally resets the SELinux user field, which a type-only comparison such as `restorecon -n` never reports. The role's preflight `matchpathcon` gate checks the daemon binary (`/usr/bin/crond` → `crond_exec_t`), not the drop-ins; the drop-in contexts are asserted by the role's verify stage. See [Drop-in files and SELinux context inheritance](../../explanation/dropin-selinux-context-inheritance.md).
 
 ## Verification
 

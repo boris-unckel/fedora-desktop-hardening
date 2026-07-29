@@ -33,17 +33,32 @@
 - name: "topic_kernel_hardening | restorecon kernel-hardening drop-ins"
   # Restorecon only the paths that already exist. The first flush_handlers in
   # the apply block fires this handler (notified by the sysctl drop-in) before
-  # the modprobe/limits/coredump drop-ins are written, so a fixed four-path
-  # restorecon would fail on the not-yet-created files. Skipping absent paths
-  # keeps the defence-in-depth relabel correct at every flush point and is a
-  # no-op when the install already ran from sysadm_t.
+  # the modprobe/limits/coredump drop-ins are written, so a fixed path list
+  # would fail on the not-yet-created files. Skipping absent paths keeps the
+  # relabel correct at every flush point.
+  #
+  # The coredump drop-in directory is listed alongside the files because this
+  # role creates it: stock Fedora ships /etc/systemd/coredump.conf as a flat
+  # file and no coredump.conf.d/. A directory created under /etc/systemd
+  # inherits etc_t from its parent, while file_contexts maps the path to
+  # systemd_conf_t — relabelling only the file inside it would leave the
+  # directory itself on the wrong type indefinitely.
+  #
+  # The other three directories are stock and deliberately absent from the
+  # list: they hold foreign files, and a recursive relabel there would reach
+  # well past this role's own artefacts.
+  #
+  # -F resets the SELinux user field as well as the type. Without it every
+  # path keeps the user identity of whoever applied the role, and that drift
+  # is invisible to `restorecon -n`, which compares the type alone.
   ansible.builtin.shell: |
     for f in \
       "{{ topic_kernel_hardening_sysctl_dir }}/99-hardening.conf" \
       "{{ topic_kernel_hardening_modprobe_dir }}/hardening.conf" \
       "{{ topic_kernel_hardening_limits_dir }}/90-nocore.conf" \
+      "{{ topic_kernel_hardening_coredump_dir }}" \
       "{{ topic_kernel_hardening_coredump_dir }}/disable.conf"; do
-      [ -e "$f" ] && restorecon -v "$f" || true
+      [ -e "$f" ] && restorecon -F -v "$f" || true
     done
   args:
     executable: /bin/bash

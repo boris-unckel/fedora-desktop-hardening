@@ -47,6 +47,56 @@ check_file() {
   esac
 }
 
+# check_file above compares the SELinux *type* against a hardcoded expectation
+# and stops there. That leaves two gaps this function closes: the SELinux user
+# field is never looked at, and the acceptance directory is not an artefact in
+# check_file's list at all. Both matter here more than elsewhere, because this
+# topic's fourth check is itself a context comparison -- and it compares types,
+# so it can never report drift confined to the user field.
+context_matches() {
+  local path="$1" mode ftype actual expected
+  ftype="$(LC_ALL=C stat -c '%F' "$path" 2>/dev/null)" || {
+    fail "context: ${path} not stat-able"
+    return
+  }
+  case "$ftype" in
+    *"symbolic link"*) mode="link" ;;
+    "directory") mode="dir" ;;
+    *) mode="file" ;;
+  esac
+  actual="$(stat -c '%C' "$path" 2>/dev/null || true)"
+  expected="$(matchpathcon -m "$mode" "$path" 2>/dev/null | sed 's#.*\t##')"
+  if [[ -z "$expected" || -z "$actual" ]]; then
+    fail "context: ${path} not resolvable"
+  elif [[ "$actual" != "$expected" ]]; then
+    fail "context: ${path} is ${actual}, file_contexts says ${expected}"
+  else
+    ok "context: ${path} ${actual}"
+  fi
+}
+
+verify_context() {
+  printf '== selinux context (full, including the user field) ==\n'
+  if ! command -v matchpathcon >/dev/null 2>&1; then
+    printf '  [skip] matchpathcon not available\n'
+    return
+  fi
+  local p
+  for p in "$WRAPPER" \
+           "${UNIT_DIR}/integrity-check.service" \
+           "${UNIT_DIR}/integrity-check.timer" \
+           "${UNIT_DIR}/aide-check.service" \
+           "${UNIT_DIR}/aide-init.service" \
+           "$ACCEPT_DIR"; do
+    [[ -e "$p" ]] && context_matches "$p"
+  done
+  [[ -e "$BANNER" ]] && context_matches "$BANNER"
+  for p in "$ACCEPT_DIR"/*; do
+    [[ -e "$p" ]] && context_matches "$p"
+  done
+  return 0
+}
+
 verify_artefacts() {
   printf '== artefacts ==\n'
   check_file "$WRAPPER" 755 bin_t
@@ -167,6 +217,7 @@ main() {
   printf 'topic_integrity_monitoring verify\n'
   printf 'context: %s\n\n' "$(id -Z 2>/dev/null || echo '?')"
   verify_artefacts
+  verify_context
   verify_timers
   verify_scope
   verify_accept_lists

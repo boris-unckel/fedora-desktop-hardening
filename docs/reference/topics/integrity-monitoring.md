@@ -280,11 +280,12 @@ find /var/log/aide -maxdepth 1 -name 'integrity-*.log' -mtime +90 -delete
 | `/etc/systemd/system/aide-check.service` | `0644` | `root:root` | `systemd_unit_file_t` |
 | `/etc/systemd/system/aide-init.service` | `0644` | `root:root` | `systemd_unit_file_t` |
 | `/etc/profile.d/aide-alert.sh` | `0644` | `root:root` | `bin_t` |
+| `/etc/integrity-check/` | `0755` | `root:root` | `etc_t` |
 | `/etc/integrity-check/accepted-*.txt` | `0644` | `root:root` | `etc_t` |
 | `/etc/aide.conf` | `0600` | `root:root` | `etc_t` |
 | `/var/lib/aide/aide.db.gz` | `0600` | `root:root` | `aide_db_t` |
 
-Two entries deserve a note. A unit file without `systemd_unit_file_t` is **not loaded at all** — the manager refuses it and the failure presents as a missing unit rather than as a permission error, so `restorecon` after installation is mandatory rather than tidy. And `bin_t` on the shell-profile drop-in is the stock context for that directory, not an anomaly.
+Three entries deserve a note. A unit file without `systemd_unit_file_t` is **not loaded at all** — the manager refuses it and the failure presents as a missing unit rather than as a permission error, so `restorecon` after installation is mandatory rather than tidy. `bin_t` on the shell-profile drop-in is the stock context for that directory, not an anomaly. And the acceptance *directory* carries its own relabel step: it is created by this topic and revisited by nothing else, so without one it would keep the context it inherited from `/etc` at creation — a defect this topic's own fourth check could not report, because that check compares types and the drift would be confined to the SELinux user field. See [Drop-in files and SELinux context inheritance](../../explanation/dropin-selinux-context-inheritance.md).
 
 `/etc/aide.conf` stays at its stock `0600`. The tool runs as `root` and no service user reads it, so a blanket `0644` — the reflex that is correct for daemon configuration under a restrictive umask — would only expose the integrity ruleset locally.
 

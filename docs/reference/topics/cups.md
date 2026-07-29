@@ -23,7 +23,7 @@ The unit `cups.service` is shipped by the `cups` package and is the print schedu
 | User / group | not set on the unit (upstream-controlled internal privilege model) |
 | Daemon binary | `/usr/sbin/cupsd` |
 | SELinux domain | `cupsd_t` |
-| Drop-in directory SELinux type | `cupsd_unit_file_t` |
+| Drop-in file SELinux type | `cupsd_unit_file_t` (directory: `systemd_unit_file_t`) |
 | Listen sockets | TCP `127.0.0.1:631`, `[::1]:631` |
 
 The Fedora 44 cups package installs the daemon binary at `/usr/sbin/cupsd`. A Fedora 44 host carries a global `/usr/sbin → /usr/bin` path equivalency that rewrites every `/usr/sbin/<binary>` lookup before the file-context table is consulted; the F44 `/usr/sbin → /usr/bin` equivalency rewrites the lookup, and the role validates the mapping with a `matchpathcon` fail-fast against both `/usr/sbin/cupsd` and `/usr/bin/cupsd` (either path resolving to `cupsd_exec_t` is sufficient). The class mechanism, the detection scan, and the mitigation form are documented in [F44 sbin/bin merge fcontext](../../explanation/f44-sbin-bin-merge.md).
@@ -135,7 +135,9 @@ sudo -r sysadm_r -t sysadm_t sesearch -A -s cupsd_t -t cups_pdf_t \
 
 All three shipping artefacts are written with mode `0644`, owner `root`, group `root`. The role's modify stage sets the mode and ownership explicitly per file rather than relying on the operator UMASK. The explicit `chmod 0644` is the standard reflex established in [UMASK 0027](../foundation/umask.md).
 
-The drop-in directory `/etc/systemd/system/cups.service.d/` and the two drop-in files inside it carry the SELinux type `cupsd_unit_file_t` — a service-specialised `*_unit_file_t` type that stock targeted policy on Fedora 44 ships for cups. This is anomalous compared to the other Topics in this tree: `udisks2`, `smartd`, `NetworkManager`, `chronyd`, `dbus-broker`, and `avahi-daemon` all use the generic `systemd_unit_file_t`. The role's `restorecon` after `ansible.builtin.copy` is what triggers the relabel from the install-time default (typically `staff_u:object_r:systemd_unit_file_t` when the operator drops the file from a `staff_t` shell) to the canonical `cupsd_unit_file_t`. Without the relabel the merged unit still runs because systemd reads merged units regardless of label, but `ls -lZ` shows the wrong type and a future SELinux audit flags it.
+Stock targeted policy on Fedora 44 or later maps a service-specialised type for these files: `file_contexts` carries `/usr/lib/systemd/system/cups.*` → `cupsd_unit_file_t`, and the `/etc/systemd/system` → `/usr/lib/systemd/system` equivalency in `file_contexts.subs_dist` extends that mapping to the drop-in path under `/etc`. The drop-in *directory* is not covered by it — the entry is qualified with `--`, which matches regular files only — so the directory keeps the generic `systemd_unit_file_t`, which is its correct type.
+
+Nothing assigns the mapped type at creation time, and no `type_transition` to a `*_unit_file_t` exists for PID 1. A file written into the drop-in directory inherits that directory's `systemd_unit_file_t`, and the role's `restorecon -F -v -R` on the drop-in directory is what moves it to `cupsd_unit_file_t`. The `-R` covers the directory itself, which this role creates and which no other step revisits; the `-F` additionally resets the SELinux user field, which a type-only comparison such as `restorecon -n` never reports. Without the relabel the merged unit still runs — systemd reads drop-ins regardless of label — but the hardening artefact keeps the wider generic type while the stock unit file beside it carries the narrower one. See [Drop-in files and SELinux context inheritance](../../explanation/dropin-selinux-context-inheritance.md).
 
 | Path | Mode | Owner | SELinux type |
 |---|---|---|---|

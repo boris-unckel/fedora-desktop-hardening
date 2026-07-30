@@ -19,12 +19,28 @@ The end-state therefore splits the job:
 |---|---|---|
 | `rpm -Va` | Content, mode, owner, group and capabilities of the package-owned set. | **None.** The package database is updated atomically by the transaction that changes the files. |
 | Unowned sweep | Files present on disk that no package owns. | **None.** Computed against the package database on every run. |
+| Boot-entry check | Versioned boot-loader entries. | **None.** Compared against the set of installed kernels. |
 | AIDE | Hash history of the remainder. | **Yes** — and it now spans a few thousand paths instead of the whole tree. |
 | `restorecon -nvR` | SELinux context drift. Dry-run only. | **None.** |
 
 Checks one and two are complementary rather than redundant. A package verification pass cannot see a file that belongs to no package — a new unowned binary in a system binary directory is invisible to it by construction, and that is precisely the artefact worth noticing. The sweep sees existence; AIDE sees content. Neither subsumes the other.
 
-Measured effect of the split on the reference host: the AIDE database fell from **29,253,354 to 198,211 bytes**, and all four checks together complete in **47 s** against **2 m 19 s** for the full-tree AIDE run alone.
+Measured effect of the split on the reference host: the AIDE database fell from **29,253,354 to 198,211 bytes**, and the whole set completes in **47 s** against **2 m 19 s** for the full-tree AIDE run alone.
+
+### Kernel rotation is expected, not a finding
+
+A kernel update replaces a fixed set of versioned artefacts under the boot directory and rotates one boot-loader entry out for another. Compared against a maintained path list, every such update produces findings — reliably, on every kernel, forever. A check that is red by construction after a routine operation is one nobody reads, and the accepting keystroke becomes reflexive.
+
+The end state removes the churn without narrowing the scope, because narrowing it here would cost real coverage: the versioned boot artefacts are ghost entries in the package database. The package verification pass skips ghosts and the unowned sweep counts them as owned, which leaves the hash baseline as the **only** check that watches the kernel image at all.
+
+Two mechanisms, both re-anchoring rather than suppressing:
+
+- **Boot-loader entries** are compared against the installed kernels instead of against a path list, and are filtered out of the unowned sweep on *both* sides of that comparison. Filtering only one side would turn every kernel change into a phantom missing-file report. Both directions stay sharp: an entry for a kernel that is not installed is a finding, and an installed kernel without an entry is a finding.
+- **Hash-baseline entries** are classified. An added artefact whose version is installed, and a removed artefact whose version is not, are expected rotation. Everything else is remainder and is reported. The interesting case therefore survives intact: a *changed* kernel image belonging to an installed kernel is remainder.
+
+The classification reads the detail report of the nested run selected by its invocation identifier, not by a time window — a window picks up the wrong report when two runs follow each other closely, and looks entirely plausible doing it. The aggregate log records counts plus the remainder; the full report stays in the nested unit's journal.
+
+An unreadable boot-entry directory is a **tool failure**, not a clean result. Treated as findings, a missing read permission would report every installed kernel as lacking an entry: a plausible-looking output that describes nothing but a broken precondition.
 
 ### Single trigger
 
@@ -204,8 +220,10 @@ Ghost entries — paths the package declares but does not ship, carrying the fil
 ### Acceptance procedure
 
 ```console
-# sudo /usr/local/sbin/integrity-check accept
+# sudo -r sysadm_r -t sysadm_t /usr/local/sbin/integrity-check accept
 ```
+
+The role change is required rather than stylistic: the log directory carries the AIDE log type, and plain `sudo` from a confined staff login has no write access there. The timer path is unaffected, because PID 1 starts the unit itself — which is why this only ever bites the mode that is invoked by hand. The wrapper checks for it up front and prints the correct invocation instead of failing with a bare shell redirection error.
 
 There is no automatic refresh anywhere in the end-state. An automatic refresh accepts every change before anyone has looked at it, which is the failure mode the whole topic is built to avoid.
 
@@ -222,11 +240,11 @@ For the same structural reason, the acceptance lists **include themselves** in t
 
 | Status | Meaning |
 |---|---|
-| `0` | All four checks clean. |
+| `0` | All checks clean. |
 | `1` | At least one check reports findings. |
 | `2` | At least one check failed as a tool. |
 
-Deliberately **not** AIDE's `1/2/4` bitmask. That encoding describes one tool's three change classes and does not extend to four aggregated checks; carrying it forward after the split would be actively wrong rather than merely imprecise. Which check fired, and what it found, is recorded in the run log.
+Deliberately **not** AIDE's `1/2/4` bitmask. That encoding describes one tool's three change classes and does not extend to a set of aggregated checks; carrying it forward after the split would be actively wrong rather than merely imprecise. Which check fired, and what it found, is recorded in the run log.
 
 A findings result is not automatically a failure state. Known findings that are deliberately left visible — context drift awaiting a fix, for instance — keep the aggregate at `1` indefinitely, and that is the intended behaviour: the alternative is accepting them, which would hide them.
 
@@ -285,7 +303,7 @@ find /var/log/aide -maxdepth 1 -name 'integrity-*.log' -mtime +90 -delete
 | `/etc/aide.conf` | `0600` | `root:root` | `etc_t` |
 | `/var/lib/aide/aide.db.gz` | `0600` | `root:root` | `aide_db_t` |
 
-Three entries deserve a note. A unit file without `systemd_unit_file_t` is **not loaded at all** — the manager refuses it and the failure presents as a missing unit rather than as a permission error, so `restorecon` after installation is mandatory rather than tidy. `bin_t` on the shell-profile drop-in is the stock context for that directory, not an anomaly. And the acceptance *directory* carries its own relabel step: it is created by this topic and revisited by nothing else, so without one it would keep the context it inherited from `/etc` at creation — a defect this topic's own fourth check could not report, because that check compares types and the drift would be confined to the SELinux user field. See [Drop-in files and SELinux context inheritance](../../explanation/dropin-selinux-context-inheritance.md).
+Three entries deserve a note. A unit file has to carry a type that PID 1 is allowed to read. `systemd_unit_file_t` guarantees that; some other types happen to qualify and some do not, and which one a file ends up with depends on where it was created or copied from. When the type does not qualify, the unit presents as **missing** rather than as a permission error — the manager reports no such unit, and the denial may not surface as an audit record either, so there is nothing obvious to attribute the failure to. `restorecon` after installation is therefore mandatory rather than tidy: not because the label is the only one that can work, but because it is the only one that is guaranteed to, and because the service-specific `*_unit_file_t` a path maps to is narrower than the generic type a file inherits. `bin_t` on the shell-profile drop-in is the stock context for that directory, not an anomaly. And the acceptance *directory* carries its own relabel step: it is created by this topic and revisited by nothing else, so without one it would keep the context it inherited from `/etc` at creation — a defect this topic's own fourth check could not report, because that check compares types and the drift would be confined to the SELinux user field. See [Drop-in files and SELinux context inheritance](../../explanation/dropin-selinux-context-inheritance.md).
 
 `/etc/aide.conf` stays at its stock `0600`. The tool runs as `root` and no service user reads it, so a blanket `0644` — the reflex that is correct for daemon configuration under a restrictive umask — would only expose the integrity ruleset locally.
 

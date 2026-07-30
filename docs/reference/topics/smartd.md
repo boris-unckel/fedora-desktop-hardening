@@ -25,6 +25,15 @@ The unit `smartd.service` is shipped by the `smartmontools` package. The stock v
 
 The SELinux type-transition `init_t → fsdaemon_t` fires on the executable label `fsdaemon_exec_t` carried by the binary. On Fedora 44 or later, the binary lives at `/usr/bin/smartd`; `/usr/sbin/smartd` is a compatibility symlink that resolves to the same inode.
 
+**This topic owns that label.** It declares the local `file_contexts` mapping for `/usr/bin/smartd`, asserts the label on every run, and restores it when it has drifted. The property is not delegated to the distribution policy, for two reasons that are independent of each other:
+
+- A context table can be rebuilt without a mapping that a generated module supplied, and a package transaction may relabel the binary directory inside that window. A mapping held locally is not part of such a rebuild and survives it. The mechanism is described in [SELinux relabel windows during policy updates](../../explanation/selinux-policy-update-relabel-window.md).
+- When the label is wrong, the unit still starts, still carries every drop-in directive, and reports no error — it simply runs unconfined. Neither the unit state nor the audit log shows it. Only an explicit comparison does.
+
+The mapping is qualified to **regular files only**, mirroring the `--` qualifier of the distribution entry. An unqualified mapping also matches the compatibility symlink, which no `--` entry applies to; the symlink's expected type is the generic one, and pulling it into the specific type produces a context-drift report that nothing ever resolves. The verify stage asserts both: the executable carries `fsdaemon_exec_t`, and the symlink carries the generic type.
+
+The assertion compares the label against the expected type **as a constant**, never against `matchpathcon`. Comparing the label to the table passes whenever both are wrong together, which is exactly the state the check exists to catch.
+
 The vendor unit ships no `RuntimeDirectory=`, no `StateDirectory=`, no `ConfigurationDirectory=`, and no `LogsDirectory=` directive, and this topic adds none. As a consequence, no `ReadWritePaths=` entry on a daemon-self-managed runtime path is required, and the boot-time mount-namespace race that affects daemons whose drop-ins point `ReadWritePaths=` at a directory the daemon creates itself does not apply here.
 
 The `smartmontools` package ships the daemon and the `smartctl(8)` command-line client. The role's preflight stage checks the package presence; the role does not interact with `smartctl(8)` invocations or with `/etc/smartmontools/smartd.conf` content.
@@ -39,6 +48,8 @@ The hardening profile splits across three drop-in INI files under `/etc/systemd/
 | `99-nnp.conf` | `NoNewPrivileges=yes` only. |
 | `99-process-restrict.conf` | Process-internal kernel restrictions (MDWE, address-family restriction, additive plus subtractive syscall filter, capability bounding set with the SATA-SMART carve-out). |
 | `nnp_smartd.cil` | Topic-owned SELinux module that grants `init_t → fsdaemon_t : process2 nnp_transition`. |
+
+Alongside the four shipping artefacts the role maintains one piece of non-file state: the local `file_contexts` mapping for the executable, described above. It ships no content of its own and is therefore not an artefact in the table, but it is asserted by verify in the same way.
 
 The split is granular by intent. Removing `99-nnp.conf` alone does not by itself prevent transition denials at next boot if the CIL module remains loaded, but the CIL module is harmless on its own; the documented Stage-1 rollback removes both atomically. The other two drop-ins carry the lower-risk and the higher-risk sandbox layers respectively, and rolling them back is sequenced in the rollback paragraph at the end of the article.
 

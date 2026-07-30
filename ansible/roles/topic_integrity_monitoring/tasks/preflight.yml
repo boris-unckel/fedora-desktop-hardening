@@ -57,8 +57,11 @@
       matchpathcon {{ topic_im_unit_dir }}/integrity-check.service returned:
         {{ mpc_unit.stdout | trim }}
       Expected: {{ topic_im_expected_unit_seltype }}.
-      A unit file without that label is not loaded at all, and the failure
-      presents as a missing unit rather than as a permission error.
+      A unit file must carry a type that PID 1 may read. This label
+      guarantees it; other types may or may not qualify, so relying on
+      whichever type the file happened to inherit is not sound. When the
+      type does not qualify, the unit presents as missing rather than as a
+      permission error, which is the harder failure to attribute.
   when: (mpc_unit.stdout | regex_search(topic_im_expected_unit_seltype)) is none
 
 - name: "preflight | matchpathcon wrapper path"

@@ -46,6 +46,20 @@ readonly -a EXPECTED_SCF_ANCHORS=(
 readonly REQUIRED_PACKAGE="smartmontools"
 readonly EXPECTED_CIL_MODULE="nnp_smartd"
 
+# Executable label. The type transition into the confined domain fires on this
+# label; if it is wrong the unit still starts and still carries every drop-in
+# directive, it simply runs unconfined. Nothing in the unit's behaviour shows
+# it, which is why the assertion is explicit.
+readonly BINARY_PATH="/usr/bin/smartd"
+readonly EXPECTED_EXEC_TYPE="fsdaemon_exec_t"
+
+# The compatibility symlink is expected to keep the generic type: `--` entries
+# in file_contexts match regular files only. Asserted so that an over-broad
+# local mapping — one added without a file-type qualifier — is caught here
+# rather than becoming a permanent context-drift report elsewhere.
+readonly BINARY_SYMLINK="/usr/sbin/smartd"
+readonly EXPECTED_SYMLINK_TYPE="bin_t"
+
 # Paths whose SELinux context is asserted against file_contexts. A directory
 # entry also covers every path inside it. Files written into a drop-in
 # directory take that directory's type at creation time; only a restorecon
@@ -310,6 +324,49 @@ context_matches() {
   return 0
 }
 
+# Type field of a path's own context. Distinct from current_type(), which
+# reports the context of this process; passing a path to that one would
+# silently ignore the argument. `stat` does not follow symlinks, so the link
+# and its target can be asserted separately.
+file_type() {
+  stat -c '%C' "$1" 2>/dev/null | awk -F: '{print $3}'
+}
+
+# Compared against the expected type as a constant, never against
+# `matchpathcon`. A table-versus-label comparison passes whenever both are
+# wrong together — and a context table can be rebuilt without a mapping that a
+# generated module supplied, which is precisely when the label goes wrong.
+# Reading the table would therefore confirm the defect instead of reporting it.
+verify_exec_label() {
+  local actual
+  actual=$(file_type "${BINARY_PATH}")
+  if [[ -z "${actual}" ]]; then
+    report_fail "exec_label" "${BINARY_PATH}: context not readable"
+    return
+  fi
+  if [[ "${actual}" == "${EXPECTED_EXEC_TYPE}" ]]; then
+    report_ok "exec_label" "${BINARY_PATH}=${actual}"
+  else
+    report_fail "exec_label" \
+      "${BINARY_PATH}: expected=${EXPECTED_EXEC_TYPE} actual=${actual}"
+  fi
+}
+
+verify_symlink_label() {
+  local actual
+  if [[ ! -L "${BINARY_SYMLINK}" ]]; then
+    report_skip "symlink_label" "${BINARY_SYMLINK} is not a symlink"
+    return
+  fi
+  actual=$(file_type "${BINARY_SYMLINK}")
+  if [[ "${actual}" == "${EXPECTED_SYMLINK_TYPE}" ]]; then
+    report_ok "symlink_label" "${BINARY_SYMLINK}=${actual}"
+  else
+    report_fail "symlink_label" \
+      "${BINARY_SYMLINK}: expected=${EXPECTED_SYMLINK_TYPE} actual=${actual} (local mapping too broad?)"
+  fi
+}
+
 verify_selinux_context() {
   local path child drift=0 checked=0
   if ! command -v matchpathcon >/dev/null 2>&1; then
@@ -352,6 +409,8 @@ main() {
     "${EXPECTED_RAF}"
   verify_systemcallfilter
   verify_selinux_domain
+  verify_exec_label
+  verify_symlink_label
   verify_cil_module
   verify_avc_clean
   verify_selinux_context

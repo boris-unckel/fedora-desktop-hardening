@@ -129,6 +129,127 @@ accepted() {
 }
 
 # -----------------------------------------------------------------------------
+# installed_kernel_versions()
+#
+# One kernel version per line, in the form that appears in file names under the
+# boot directory.
+#
+# This is the computable expectation the boot-entry check rests on: the
+# versioned boot artefacts do have a baseline — the set of installed kernels —
+# so they need no maintained path list, for the same reason the package-owned
+# set needs no second hash database.
+# -----------------------------------------------------------------------------
+installed_kernel_versions() {
+  rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core 2>/dev/null \
+    | grep -E '^[0-9]' | sort -u
+}
+
+# -----------------------------------------------------------------------------
+# is_kernel_bls_entry(path)
+#
+# True for a versioned boot-loader entry, that is
+# /boot/loader/entries/<machine-id>-<kernel-version>.conf
+#
+# The unversioned entries (rescue, memory test) deliberately do not qualify:
+# they do not rotate, they belong in the acceptance list, and their
+# disappearance should be reported.
+# -----------------------------------------------------------------------------
+is_kernel_bls_entry() {
+  [[ "$1" =~ ^/boot/loader/entries/[0-9a-f]+-[0-9]+\.[0-9]+\.[0-9]+-.+\.conf$ ]]
+}
+
+# -----------------------------------------------------------------------------
+# drop_kernel_bls(stdin -> stdout)
+#
+# Filters versioned boot-loader entries out of a path list. Applied to BOTH
+# sides of the comparison — filtering only one side would turn every kernel
+# change into a phantom "expected file disappeared".
+# -----------------------------------------------------------------------------
+drop_kernel_bls() {
+  local line
+  while IFS= read -r line; do
+    is_kernel_bls_entry "$line" || printf '%s\n' "$line"
+  done
+}
+
+# -----------------------------------------------------------------------------
+# bls_kver(path) — kernel version carried by a boot-loader entry path.
+# -----------------------------------------------------------------------------
+bls_kver() {
+  local base="${1##*/}"
+  base="${base%.conf}"
+  printf '%s\n' "${base#*-}"
+}
+
+# -----------------------------------------------------------------------------
+# check_boot_entries()
+#
+# For versioned boot-loader entries, replaces the list comparison with a
+# comparison against the installed kernels. Both directions stay sharp:
+#
+#   entry for a kernel that is not installed  -> finding
+#   installed kernel with no entry            -> finding
+#
+# Plain rotation — a new kernel arrives, the oldest is retired — no longer
+# produces a finding. It was due on every kernel update by construction and
+# turned the whole check red without ever implying an action other than
+# accepting it.
+# -----------------------------------------------------------------------------
+check_boot_entries() {
+  log_line ""
+  log_line "--- Check 2b: boot-loader entries against installed kernels ---"
+  local kvers entries e kv orphan=0 missing=0
+
+  kvers="$(installed_kernel_versions)"
+  if [[ -z "$kvers" ]]; then
+    log_line "  TOOL FAILURE: no installed kernels could be determined"
+    TOOL_ERRORS=$((TOOL_ERRORS + 1))
+    return 0
+  fi
+
+  # An unreadable directory MUST be a tool failure, not a finding. Otherwise a
+  # missing read permission reports every installed kernel as lacking an entry
+  # — a plausible-looking result that describes nothing but a broken
+  # precondition.
+  if [[ ! -d /boot/loader/entries || ! -r /boot/loader/entries ]]; then
+    log_line "  TOOL FAILURE: /boot/loader/entries not readable"
+    TOOL_ERRORS=$((TOOL_ERRORS + 1))
+    return 0
+  fi
+  entries="$(find /boot/loader/entries -maxdepth 1 -name '*.conf' 2>/dev/null \
+    | sort -u || true)"
+  if [[ -z "$entries" ]]; then
+    log_line "  TOOL FAILURE: no boot-loader entries found"
+    TOOL_ERRORS=$((TOOL_ERRORS + 1))
+    return 0
+  fi
+
+  while IFS= read -r e; do
+    [[ -n "$e" ]] || continue
+    is_kernel_bls_entry "$e" || continue
+    kv="$(bls_kver "$e")"
+    if ! printf '%s\n' "$kvers" | grep -qxF "$kv"; then
+      log_line "  FINDING: entry for a kernel that is not installed: ${kv}"
+      log_line "    ${e}"
+      orphan=$((orphan + 1))
+    fi
+  done <<<"$entries"
+
+  while IFS= read -r kv; do
+    [[ -n "$kv" ]] || continue
+    if ! printf '%s\n' "$entries" | grep -q -- "-${kv}\.conf$"; then
+      log_line "  FINDING: installed kernel with no boot entry: ${kv}"
+      missing=$((missing + 1))
+    fi
+  done <<<"$kvers"
+
+  FINDINGS=$((FINDINGS + orphan + missing))
+  if [[ "$orphan" -eq 0 && "$missing" -eq 0 ]]; then
+    log_line "  ok -- $(printf '%s\n' "$kvers" | grep -c .) kernels, entries consistent"
+  fi
+}
+
+# -----------------------------------------------------------------------------
 # transaction_id()
 #
 # Last package-manager transaction id, so the trail is bound to the
@@ -198,10 +319,14 @@ check_unowned() {
     | normalize_paths | sort -u)"
   current="$(comm -23 <(printf '%s\n' "$fslist") <(printf '%s\n' "$rpmlist"))"
 
-  added="$(comm -23 <(printf '%s\n' "$current" | grep -E '\S' || true) \
-                    <(accepted "$ACCEPT_UNOWNED") || true)"
-  removed="$(comm -13 <(printf '%s\n' "$current" | grep -E '\S' || true) \
-                      <(accepted "$ACCEPT_UNOWNED") || true)"
+  # Versioned boot-loader entries out, on BOTH sides. They have a computable
+  # baseline in the set of installed kernels and are checked against it by
+  # check_boot_entries, instead of against a path list that goes stale on
+  # every kernel update.
+  added="$(comm -23 <(printf '%s\n' "$current" | grep -E '\S' | drop_kernel_bls || true) \
+                    <(accepted "$ACCEPT_UNOWNED" | drop_kernel_bls) || true)"
+  removed="$(comm -13 <(printf '%s\n' "$current" | grep -E '\S' | drop_kernel_bls || true) \
+                      <(accepted "$ACCEPT_UNOWNED" | drop_kernel_bls) || true)"
   na="$(printf '%s\n' "$added" | grep -c . || true)"
   nr="$(printf '%s\n' "$removed" | grep -c . || true)"
 
@@ -218,6 +343,150 @@ check_unowned() {
     log_block "$(printf '%s\n' "$removed" | sed 's/^/    - /')"
     FINDINGS=$((FINDINGS + nr))
   fi
+}
+
+# -----------------------------------------------------------------------------
+# aide_report_lines()
+#
+# The detail report of the inner unit run that just finished.
+#
+# Selected by InvocationID rather than by a time window: the identifier binds
+# the lines to exactly this unit run. A time window would pick up the wrong
+# report whenever two runs follow each other closely, and would look entirely
+# plausible doing it.
+#
+# Returns 1 when no report can be obtained, so the caller falls back to the
+# bitmask instead of implying completeness it does not have.
+# -----------------------------------------------------------------------------
+aide_report_lines() {
+  local invid
+  invid="$(systemctl show -p InvocationID --value "$AIDE_UNIT" 2>/dev/null || true)"
+  [[ -n "$invid" ]] || return 1
+  journalctl "_SYSTEMD_INVOCATION_ID=${invid}" -o cat --no-pager 2>/dev/null \
+    | grep -E '\S' || return 1
+}
+
+# -----------------------------------------------------------------------------
+# boot_artifact_kver(path)
+#
+# Kernel version carried by a versioned boot artefact, empty for anything
+# else. Covers the kernel image, the initramfs, the symbol map, the build
+# configuration, the compressed symbol versions, the integrity digest and the
+# boot-loader entry — all of them carry the same version in the name.
+# -----------------------------------------------------------------------------
+boot_artifact_kver() {
+  local path="$1"
+  [[ "$path" == /boot/* ]] || return 0
+  printf '%s\n' "$path" \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[a-z0-9]+\.[a-z0-9_]+' \
+    | head -1
+}
+
+# -----------------------------------------------------------------------------
+# classify_aide_findings()
+#
+# Separates the AIDE entries into expected kernel rotation and remainder.
+#
+# Why this is needed rather than a narrower scope: the six versioned boot
+# artefacts per kernel are ghost entries in the package database. Check 1
+# filters ghosts and check 2 sees them as package-owned, which leaves AIDE as
+# the ONLY check that watches the kernel image at all. Removing them from its
+# scope would be a blind spot, not a reduction in noise. So they stay, and are
+# classified instead:
+#
+#   added   + version installed      -> expected (a new kernel)
+#   removed + version NOT installed  -> expected (a retired kernel)
+#   anything else                    -> finding
+#
+# The interesting case therefore stays sharp: a CHANGED kernel image belonging
+# to an installed kernel is remainder and is reported.
+#
+# The log stays short — counts plus the remainder, not the whole report. The
+# full text remains in the journal of the inner unit.
+# -----------------------------------------------------------------------------
+classify_aide_findings() {
+  local report kvers pairs section path kv
+  local n_expected=0 n_rest=0
+  local rest=""
+
+  if ! report="$(aide_report_lines)"; then
+    log_line "  FINDING: detail report unreadable -- bitmask only."
+    log_line "    journalctl -u ${AIDE_UNIT} -b 0"
+    FINDINGS=$((FINDINGS + 1))
+    return 0
+  fi
+
+  kvers="$(installed_kernel_versions)"
+
+  # Two independent filters, both required:
+  #
+  #   1. Section state. After the detailed-changes heading each changed object
+  #      is repeated as a "File:" or "Directory:" line; without a reset every
+  #      changed entry is counted a second time.
+  #   2. Line shape. Entry lines start with the type character and the flag
+  #      column, all lower case. The detail headings start with a capital and
+  #      fall out on that alone.
+  #
+  # The path is taken after the LAST ": " because the flag column of a changed
+  # entry contains colons itself.
+  pairs="$(printf '%s\n' "$report" | awk '
+    /^Added entries:/                      { s = "added";   next }
+    /^Removed entries:/                    { s = "removed"; next }
+    /^Changed entries:/                    { s = "changed"; next }
+    /^Detailed information about changes:/ { s = "";        next }
+    /^The attributes of the/               { s = "";        next }
+    /^-----/                               { next }
+    s != "" && /^[fdlpscb][^:]*: \// {
+      line = $0
+      sub(/^.*: \//, "/", line)
+      print s "\t" line
+    }
+  ')"
+
+  if [[ -z "$pairs" ]]; then
+    log_line "  FINDING: report read, but no entries recognised."
+    log_line "    Format change? journalctl -u ${AIDE_UNIT} -b 0"
+    FINDINGS=$((FINDINGS + 1))
+    return 0
+  fi
+
+  while IFS=$'\t' read -r section path; do
+    [[ -n "$path" ]] || continue
+    kv="$(boot_artifact_kver "$path")"
+    if [[ -n "$kv" ]]; then
+      if [[ "$section" == "added" ]] \
+        && printf '%s\n' "$kvers" | grep -qxF "$kv"; then
+        n_expected=$((n_expected + 1))
+        continue
+      fi
+      if [[ "$section" == "removed" ]] \
+        && ! printf '%s\n' "$kvers" | grep -qxF "$kv"; then
+        n_expected=$((n_expected + 1))
+        continue
+      fi
+    fi
+    n_rest=$((n_rest + 1))
+    rest+="    ${section}: ${path}"$'\n'
+  done <<<"$pairs"
+
+  log_line "  entries: $(printf '%s\n' "$pairs" | grep -c .)" \
+    "-- ${n_expected} kernel rotation (expected), ${n_rest} remainder"
+
+  if [[ "$n_rest" -eq 0 ]]; then
+    log_line "  ok -- kernel rotation only"
+    return 0
+  fi
+
+  log_line "  FINDING: ${n_rest} entry/entries outside the kernel rotation"
+  # Capped, but the cap is stated. A silent truncation reads as completeness.
+  if [[ "$n_rest" -gt 40 ]]; then
+    log_block "$(printf '%s' "$rest" | head -40)"
+    log_line "    ... $(( n_rest - 40 )) more not shown."
+    log_line "    Full text: journalctl -u ${AIDE_UNIT} -b 0"
+  else
+    log_block "$(printf '%s' "$rest")"
+  fi
+  FINDINGS=$((FINDINGS + n_rest))
 }
 
 # -----------------------------------------------------------------------------
@@ -256,8 +525,8 @@ check_aide() {
       (( status & 1 )) && parts+="added "
       (( status & 2 )) && parts+="removed "
       (( status & 4 )) && parts+="changed "
-      log_line "  FINDING: ${parts% }"
-      FINDINGS=$((FINDINGS + 1))
+      log_line "  bitmask: ${parts% }"
+      classify_aide_findings
       ;;
     "")
       log_line "  TOOL FAILURE: no ExecMainStatus readable"
@@ -398,9 +667,8 @@ mode_accept() {
   local ts
   ts="$(date +%Y%m%d-%H%M%S)"
   LOG="${LOG_DIR}/${LOG_PREFIX}-accept-${ts}.log"
-  mkdir -p "$LOG_DIR" "$ACCEPT_DIR"
-  : >"$LOG"
-  chmod 0600 "$LOG"
+  mkdir -p "$ACCEPT_DIR" 2>/dev/null || true
+  open_log accept || return 2
 
   log_line "integrity-check accept -- ${ts}"
   log_line ""
@@ -456,9 +724,7 @@ mode_check() {
   txid="$(transaction_id)"
   LOG="${LOG_DIR}/${LOG_PREFIX}-${ts}-dnf${txid}.log"
 
-  mkdir -p "$LOG_DIR"
-  : >"$LOG"
-  chmod 0600 "$LOG"
+  open_log check || return 2
 
   log_line "integrity-check -- ${ts}"
   log_line "transaction : ${txid}"
@@ -466,6 +732,7 @@ mode_check() {
 
   check_rpm_verify
   check_unowned
+  check_boot_entries
   check_aide
   check_context
 
@@ -495,10 +762,51 @@ mode_check() {
   return 0
 }
 
+# -----------------------------------------------------------------------------
+# open_log(mode)
+#
+# Creates the log file — and catches the domain trap first.
+#
+# The log directory carries the AIDE log type. The timer path runs from PID 1
+# and may write there; a manual invocation through plain sudo from a confined
+# staff login stays in the sudo domain of that role and may not. Without this
+# gate the run ends as a bare shell redirection error with no hint at the
+# cause — and the acceptance mode is, by construction, the one invoked by hand.
+#
+# Returns 2 when the log is not writable; the caller aborts.
+# -----------------------------------------------------------------------------
+open_log() {
+  local mode="$1"
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  # A subshell, not `: >"$LOG" 2>/dev/null`: the shell emits the error for a
+  # failing redirection itself, outside the command's own redirection, so it
+  # would leak ahead of the diagnosis below.
+  if ! ( : >"$LOG" ) 2>/dev/null; then
+    {
+      printf 'integrity-check: cannot create %s\n' "$LOG"
+      printf '\n'
+      printf '  %s carries the AIDE log type. Plain sudo from a confined\n' "$LOG_DIR"
+      printf '  staff login has no write access there.\n'
+      printf '\n'
+      printf '  Invoke with a role change:\n'
+      printf '    sudo -r sysadm_r -t sysadm_t %s %s\n' "$0" "$mode"
+      printf '\n'
+      printf '  Current context: %s\n' "$(id -Z 2>/dev/null || echo '?')"
+    } >&2
+    return 2
+  fi
+  chmod 0600 "$LOG"
+  return 0
+}
+
 usage() {
-  printf 'Usage: %s [check|accept]\n' "${0##*/}" >&2
-  printf '  check   (default) four checks, log under %s, exit 0/1/2\n' "$LOG_DIR" >&2
+  printf 'Usage: sudo -r sysadm_r -t sysadm_t %s [check|accept]\n' "${0##*/}" >&2
+  printf '  check   (default) five checks, log under %s, exit 0/1/2\n' "$LOG_DIR" >&2
   printf '  accept  adopt current state as the new reference -- ONLY after review\n' >&2
+  printf '\n' >&2
+  printf 'The role change is required: %s carries the AIDE log type, and\n' "$LOG_DIR" >&2
+  printf 'plain sudo from a confined staff login has no write access there.\n' >&2
+  printf 'The timer path is unaffected -- PID 1 starts the unit itself.\n' >&2
 }
 
 main() {

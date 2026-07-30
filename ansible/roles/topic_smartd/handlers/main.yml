@@ -9,6 +9,10 @@
 #                                  drop-in files. Triggers restorecon,
 #                                  daemon-reload, and a unit restart, in
 #                                  that order.
+#   "topic_smartd exec label changed" — fires when the executable had to be
+#                                  relabelled. A running process keeps the
+#                                  domain it was started in, so the label
+#                                  alone does not move it; only a restart does.
 
 - name: "topic_smartd | semodule install nnp_smartd"
   ansible.builtin.command:
@@ -45,6 +49,16 @@
   become: true
   become_flags: "-r sysadm_r -t sysadm_t"
   listen: "topic_smartd dropin changed"
+
+- name: "topic_smartd | restart smartd after an executable relabel"
+  # Deliberately not relabelling the compatibility symlink alongside: entries
+  # qualified with `--` match regular files only, so the generic type is the
+  # correct one for the link. Pulling it along would be a drift report that
+  # never resolves.
+  ansible.builtin.systemd:
+    name: "smartd.service"
+    state: restarted
+  listen: "topic_smartd exec label changed"
 
 - name: "topic_smartd | daemon-reload"
   ansible.builtin.systemd:

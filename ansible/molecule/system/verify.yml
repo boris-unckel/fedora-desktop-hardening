@@ -18,28 +18,11 @@
 - name: Verify — post-reboot persistence and security scoring
   hosts: all
   gather_facts: false
+  # The topic list is shared with converge.yml so the two cannot diverge.
+  vars_files:
+    - vars/system-tier-topics.yml
   vars:
     baseline_dir: /root/livetest-baseline
-    system_tier_topics:
-      - topic_kernel_hardening
-      - topic_dbus_broker
-      - topic_network_manager
-      - topic_auditd
-      - topic_plymouth
-      - topic_chronyd
-      - topic_cron
-      - topic_rngd
-      - topic_tuned
-      - topic_udisks2
-      - topic_avahi_daemon
-      - topic_alsa_state
-      - topic_smartd
-      - topic_thermald
-      - topic_flatpak_collection_id
-      - topic_python_pip_user_tree
-      - topic_switcheroo_control
-      - topic_flatpak_audio_sandbox
-      - topic_flatpak_oci_pull_dbus
     scored_units:
       - auditd.service
       - dbus-broker.service
@@ -54,6 +37,7 @@
       - thermald.service
       - alsa-state.service
       - plymouth-start.service
+      - cups.service
   tasks:
     - name: Confirm the host is in a booted state
       ansible.builtin.command: systemctl is-system-running

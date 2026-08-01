@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# The cumulative cloud-testable topic set, in bootstrap (P1 -> P2 -> P3) order.
+#
+# This list lives in ONE file because converge.yml and verify.yml must agree and
+# nothing else enforces that. They previously each carried their own copy, and
+# they silently diverged: converge applied 22 topics while verify asserted
+# post-reboot persistence for 19. The run reported "all 19 topics clean" and
+# looked green, having never checked three of the topics it had just deployed.
+# A divergence here is invisible in exactly the direction that matters — the
+# verify side is the one that shrinks.
+#
+# Session-dependent topics (keepassxc, mozilla_firefox, mozilla_thunderbird,
+# flatpak_portal_cache) and the Wayland-session topic (staff_wayland_memfd) are
+# excluded by design: they need a live user session the headless system node
+# does not provide.
+system_tier_topics:
+  # P1 — whole-host / boot-failure class, applied first.
+  - topic_kernel_hardening
+  - topic_dbus_broker
+  - topic_network_manager
+  - topic_auditd
+  - topic_plymouth
+  - topic_cups
+  # P2 — service-level blast radius.
+  - topic_chronyd
+  - topic_cron
+  - topic_rngd
+  - topic_tuned
+  - topic_udisks2
+  - topic_avahi_daemon
+  - topic_alsa_state
+  - topic_smartd
+  - topic_thermald
+  # P3 — post-login / configuration-only.
+  - topic_flatpak_collection_id
+  - topic_python_pip_user_tree
+  - topic_switcheroo_control
+  - topic_flatpak_audio_sandbox
+  - topic_flatpak_oci_pull_dbus
+  - topic_flatpak_kfd_device
+  # Deliberately last, out of P-order. The role takes the FIRST integrity
+  # baseline itself when none exists, so it must run after every other topic
+  # has written its files -- otherwise the baseline is stale the moment the
+  # converge finishes. This is signal quality, not correctness: findings are a
+  # documented PASS, only a tool failure is a FAIL.
+  - topic_integrity_monitoring

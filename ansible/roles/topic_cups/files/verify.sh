@@ -295,7 +295,7 @@ expected_context() {
   local path="$1" mode ftype
   ftype=$(LC_ALL=C stat -c '%F' "${path}" 2>/dev/null) || return 1
   case "${ftype}" in
-    *"symbolic link"*) mode="link" ;;
+    *"symbolic link"*) mode="lnk_file" ;;
     "directory") mode="dir" ;;
     *) mode="file" ;;
   esac
@@ -378,6 +378,7 @@ main() {
   verify_cil_rule "cil_rule_2" "cupsd_t" "cupsd_lpd_t"
   verify_cil_rule "cil_rule_3" "cupsd_t" "cupsd_config_t"
   verify_cil_rule "cil_rule_4" "cupsd_t" "cups_pdf_t"
+  verify_cil_rule "cil_rule_5" "cupsd_t" "cups_brf_t"
   verify_avc_clean
   verify_selinux_context
   exit "${fail_state}"

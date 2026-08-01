@@ -139,9 +139,14 @@ accepted() {
 # so they need no maintained path list, for the same reason the package-owned
 # set needs no second hash database.
 # -----------------------------------------------------------------------------
+# The `|| true` is load-bearing under `set -o pipefail`: grep exits 1 when the
+# query yields nothing, the pipeline inherits that, and an unguarded
+# `kvers="$(installed_kernel_versions)"` would abort the whole run instead of
+# reaching the caller's TOOL FAILURE branch. An empty list must REACH that
+# branch, not bypass it.
 installed_kernel_versions() {
   rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core 2>/dev/null \
-    | grep -E '^[0-9]' | sort -u
+    | grep -E '^[0-9]' | sort -u || true
 }
 
 # -----------------------------------------------------------------------------
@@ -308,6 +313,7 @@ check_unowned() {
   log_line ""
   log_line "--- Check 2: unowned sweep (files no package owns) ---"
   local rpmlist fslist current added removed na nr
+  local walk_rc=0
 
   rpmlist="$(rpm -qal 2>/dev/null | normalize_paths | sort -u)"
   if [[ -z "$rpmlist" ]]; then
@@ -315,8 +321,20 @@ check_unowned() {
     TOOL_ERRORS=$((TOOL_ERRORS + 1))
     return 0
   fi
+  # An incomplete walk MUST NOT pass as a result. find exits non-zero when a
+  # scan root is absent or a subtree unreadable; with stderr discarded and the
+  # status swallowed, the sweep would compare a short file list against the full
+  # package list and report every unwalked path as "expected file gone" — a
+  # plausible-looking answer to a broken precondition. Diagnosed as a tool
+  # failure, matching check_boot_entries.
   fslist="$(find "${SCAN_ROOTS[@]}" -xdev \( -type f -o -type l \) 2>/dev/null \
-    | normalize_paths | sort -u)"
+    | normalize_paths | sort -u)" || walk_rc=$?
+  if [[ "$walk_rc" -ne 0 ]]; then
+    log_line "  TOOL FAILURE: sweep walk rc=${walk_rc} -- scan root absent or unreadable"
+    log_line "    roots: ${SCAN_ROOTS[*]}"
+    TOOL_ERRORS=$((TOOL_ERRORS + 1))
+    return 0
+  fi
   current="$(comm -23 <(printf '%s\n' "$fslist") <(printf '%s\n' "$rpmlist"))"
 
   # Versioned boot-loader entries out, on BOTH sides. They have a computable
@@ -373,13 +391,22 @@ aide_report_lines() {
 # else. Covers the kernel image, the initramfs, the symbol map, the build
 # configuration, the compressed symbol versions, the integrity digest and the
 # boot-loader entry — all of them carry the same version in the name.
+#
+# Matched with the shell's own regex engine rather than a `grep -oE | head -1`
+# pipeline. That is correctness, not style: "no version in this path" is the
+# NORMAL case here — every unversioned path under the boot directory takes it,
+# starting with the boot-loader entry directory itself, which changes on every
+# kernel rotation. grep signals it with exit 1, `set -o pipefail` promotes it to
+# a pipeline failure, and `set -e` then aborted the entire run at the caller's
+# `kv="$(boot_artifact_kver "$path")"` assignment — mid-check, with a truncated
+# log and a bare exit 1 that is indistinguishable from the documented
+# "findings" status. Same leftmost match, no exit-status coupling.
 # -----------------------------------------------------------------------------
 boot_artifact_kver() {
   local path="$1"
   [[ "$path" == /boot/* ]] || return 0
-  printf '%s\n' "$path" \
-    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[a-z0-9]+\.[a-z0-9_]+' \
-    | head -1
+  [[ "$path" =~ [0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[a-z0-9]+\.[a-z0-9_]+ ]] || return 0
+  printf '%s\n' "${BASH_REMATCH[0]}"
 }
 
 # -----------------------------------------------------------------------------
@@ -609,6 +636,7 @@ prune_logs() {
 # -----------------------------------------------------------------------------
 write_accept_lists() {
   local ts out rpmlist fslist current
+  local walk_rc=0
   ts="$(date +%Y%m%d-%H%M%S)"
 
   log_line "--- accepted-rpm-verify.txt ---"
@@ -632,8 +660,16 @@ write_accept_lists() {
     log_line "  FAILURE: rpm -qal produced no output"
     return 1
   fi
+  # Same precondition as the sweep, and here it matters more: an incomplete walk
+  # would be frozen into the acceptance list, so the next full walk reports the
+  # missing paths as findings and the baseline is quietly wrong.
   fslist="$(find "${SCAN_ROOTS[@]}" -xdev \( -type f -o -type l \) 2>/dev/null \
-    | normalize_paths | sort -u)"
+    | normalize_paths | sort -u)" || walk_rc=$?
+  if [[ "$walk_rc" -ne 0 ]]; then
+    log_line "  FAILURE: sweep walk rc=${walk_rc} -- scan root absent or unreadable"
+    log_line "    roots: ${SCAN_ROOTS[*]}  -- list NOT written"
+    return 1
+  fi
   current="$(comm -23 <(printf '%s\n' "$fslist") <(printf '%s\n' "$rpmlist"))"
   {
     printf '# integrity-check: accepted non-package-owned paths\n'

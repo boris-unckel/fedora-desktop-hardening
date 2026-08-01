@@ -184,6 +184,10 @@ The verify script compares observed state against a hardcoded expected set and e
 | `SystemCallFilter` | length `> 200` bytes after expansion, contains anchor syscalls (`read`, `write`, `openat`, `close`, `ioctl`, `fstat`) |
 | Live SELinux domain | `fsdaemon_t` |
 | `semodule -l | grep nnp_smartd` | one line (sysadm_t-gated) |
+| Executable label on `/usr/bin/smartd` | `fsdaemon_exec_t`, compared as a constant (sysadm_t-gated) |
+| Label on the `/usr/sbin/smartd` compatibility symlink | the generic type, or `SKIP` where the path is not a symlink (sysadm_t-gated) |
+
+Both label checks are `sysadm_t`-gated for a structural reason, not for convenience: the topic relabels the binary to `fsdaemon_exec_t`, and `staff_t` holds no `getattr` on that type. From a confined staff shell the label is unreadable, so the check reports `SKIP` there. Treating that as drift would make a correctly hardened host fail its own verify — the confined shell cannot observe the very property the relabel established.
 
 Two normalisation conventions are load-bearing. `systemctl show -p CapabilityBoundingSet --value` returns capabilities in alphabetical lower-case form, so the expected string is `cap_sys_admin cap_sys_rawio` and any other order or any extra capability fails the check. `RestrictAddressFamilies=AF_UNIX` carries a single value, so no source-order question arises.
 

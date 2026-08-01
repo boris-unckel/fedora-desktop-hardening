@@ -298,7 +298,7 @@ expected_context() {
   local path="$1" mode ftype
   ftype=$(LC_ALL=C stat -c '%F' "${path}" 2>/dev/null) || return 1
   case "${ftype}" in
-    *"symbolic link"*) mode="link" ;;
+    *"symbolic link"*) mode="lnk_file" ;;
     "directory") mode="dir" ;;
     *) mode="file" ;;
   esac
@@ -328,8 +328,16 @@ context_matches() {
 # reports the context of this process; passing a path to that one would
 # silently ignore the argument. `stat` does not follow symlinks, so the link
 # and its target can be asserted separately.
+#
+# The `|| true` is load-bearing. An unreadable path is an EXPECTED outcome
+# here -- the caller tests for the empty string and reports it -- but `stat`
+# signals it with exit 1, `set -o pipefail` promotes that to a pipeline
+# failure, and `set -e` then killed the script at the caller's
+# `actual=$(file_type ...)` assignment. The caller's "context not readable"
+# branch was unreachable, and the abort surfaced as a bare rc=1: no FAIL line,
+# no remaining checks, indistinguishable from ordinary drift.
 file_type() {
-  stat -c '%C' "$1" 2>/dev/null | awk -F: '{print $3}'
+  stat -c '%C' "$1" 2>/dev/null | awk -F: '{print $3}' || true
 }
 
 # Compared against the expected type as a constant, never against
@@ -337,8 +345,18 @@ file_type() {
 # wrong together — and a context table can be rebuilt without a mapping that a
 # generated module supplied, which is precisely when the label goes wrong.
 # Reading the table would therefore confirm the defect instead of reporting it.
+# sysadm_t-gated, like every other policy-side check in this script. The gate
+# is not a convenience: this topic relabels the binary to fsdaemon_exec_t, and
+# staff_t holds no getattr on that type, so the label is structurally
+# unreadable from a confined staff shell. Reporting that as drift would make
+# the script fail on a correctly hardened host -- the confined shell cannot
+# see the very property the relabel established.
 verify_exec_label() {
   local actual
+  if ! is_sysadm_t; then
+    report_skip "exec_label" "needs sysadm_t"
+    return
+  fi
   actual=$(file_type "${BINARY_PATH}")
   if [[ -z "${actual}" ]]; then
     report_fail "exec_label" "${BINARY_PATH}: context not readable"
@@ -352,8 +370,14 @@ verify_exec_label() {
   fi
 }
 
+# Same gate, same reason: the link resolves into the relabelled type, and the
+# check reads a context either way.
 verify_symlink_label() {
   local actual
+  if ! is_sysadm_t; then
+    report_skip "symlink_label" "needs sysadm_t"
+    return
+  fi
   if [[ ! -L "${BINARY_SYMLINK}" ]]; then
     report_skip "symlink_label" "${BINARY_SYMLINK} is not a symlink"
     return

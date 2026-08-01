@@ -33,7 +33,7 @@ livetest/
 The `livetest/` suite exercises these roles on ephemeral cloud virtual machines, with the
 Ansible controller separate from the target, to confirm the end state applies, verifies,
 and survives a reboot away from the authoring host. The suite is green through its system
-tier: the Foundation plus the 19 cloud-testable topics apply cumulatively, are idempotent,
+tier: the Foundation plus 22 cloud-testable topics apply cumulatively, are idempotent,
 survive a real reboot, and verify post-reboot in both SELinux contexts, with pre/post
 security scores captured. See `livetest/README.md` for the current status.
 

@@ -13,36 +13,46 @@ tier remains.
 
 ## Status
 
-The full run record — environment realities, every defect found and its fix, the per-topic
-disposition matrix, and the captured scores — is
+The current run record — environment realities, every defect found and its fix, the
+per-topic disposition matrix, and the captured scores — is
+[reports/full-run-2026-08.md](reports/full-run-2026-08.md); the preceding one is
 [reports/component-tier-first-run.md](reports/component-tier-first-run.md). As of
-2026-06-05:
+2026-08-01:
 
-- **Component tier: 19 topics green.** Each green topic passes its full Molecule scenario
-  from the baked base snapshot: create, foundation prepare, converge, idempotence with
-  zero changed tasks, verify in both SELinux contexts (`staff_t` and `sysadm_t`), destroy.
-  Of the remaining topic roles, `aide` and `cups` are deferred on an open AVC-record
-  classification, and five session/Wayland topics (`keepassxc`, `mozilla_firefox`,
-  `mozilla_thunderbird`, `flatpak_portal_cache`, `staff_wayland_memfd`) are outside cloud
-  scope.
-- **System tier: fully green.** Cumulative converge of the Foundation plus all 19 green
-  topics, a second converge with zero changed tasks, a real reboot with boot-survival
-  (`is-system-running=running`), and post-reboot per-topic persistence clean in both
-  SELinux contexts.
+- **Component tier: 23 of 23 green.** Every role that ships a component scenario passes its
+  full Molecule scenario from the baked base snapshot: create, foundation prepare, converge,
+  idempotence with zero changed tasks, verify in both SELinux contexts (`staff_t` and
+  `sysadm_t`), destroy. The two former deferrals are resolved — `cups` was a real gap in its
+  own CIL module, and `integrity_monitoring` (which replaced the `aide` topic) had never
+  completed a converge at all. The four session topics (`keepassxc`, `mozilla_firefox`,
+  `mozilla_thunderbird`, `flatpak_portal_cache`) ship no component scenario and stay outside
+  cloud scope.
+- **System tier: fully green over 22 topics.** Cumulative converge of the Foundation plus the
+  22 cloud-testable topics, a second converge with zero changed tasks, a real reboot with
+  boot-survival (`is-system-running=running`), and post-reboot per-topic persistence clean in
+  both SELinux contexts for every one of the 22. `staff_wayland_memfd` is the one
+  component-tested topic held out of the system tier, by design: it needs a Wayland session.
 - **Security scores captured (pre → post hardening):** OpenSCAP (`ssg-fedora-ds`) pass
-  count 184 → 200; Lynis hardening index 67 → 74; `systemd-analyze security` exposure
-  drops for all 13 hardened units, e.g. plymouth-start 9.5 → 1.9, alsa-state 9.6 → 2.6,
-  NetworkManager 7.8 → 4.9.
-- **Not yet run:** the session tier (the five desktop-session topics).
+  count 184 → 201; Lynis hardening index 67 → 75; `systemd-analyze security` exposure
+  drops for the hardened units, e.g. plymouth-start 9.5 → 1.9, alsa-state 9.6 → 2.6,
+  NetworkManager 7.8 → 4.9. `cups.service` is scored from this run on and has no
+  pre-hardening figure yet.
+- **Not yet run:** the session tier (the four session topics plus the Wayland-session
+  effectiveness branch of `staff_wayland_memfd`).
 
-The system tier earned its place on the way to green: it caught a boot-failure-class
-defect the component tier structurally cannot see (plymouthd seccomp-SIGSYS-killed by its
-hardening drop-in on the first hardened boot; root cause and fix in the report).
+Both tiers have now earned their place. The system tier caught a boot-failure-class defect
+the component tier structurally cannot see (plymouthd seccomp-SIGSYS-killed by its hardening
+drop-in on the first hardened boot, in the previous run). In this run it caught a second
+class the component tier had been blind to: a topic whose verify reported privileged-only
+reads as drift, hidden by the only component scenario that ran a single SELinux context.
 
 Scenario plumbing lives in the role tree: shared `create`/`destroy` and the
 substrate-and-foundation `prepare` under `../ansible/molecule/shared/`, the system-tier
 scenario under `../ansible/molecule/system/`, and a component scenario per cloud-testable
-topic role (23 of the 27) at `../ansible/roles/<role>/molecule/default/`.
+topic role (23 of the 27) at `../ansible/roles/<role>/molecule/default/`. The system tier's
+topic list lives once, in `../ansible/molecule/system/vars/system-tier-topics.yml`, and is
+loaded by both its converge and its verify: the two previously held separate copies and
+silently diverged, so the run applied more topics than it checked.
 
 ## Relation to the rest of the tree
 

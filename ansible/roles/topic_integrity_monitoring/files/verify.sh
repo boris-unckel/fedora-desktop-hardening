@@ -26,6 +26,28 @@ RC=0
 
 fail() { printf '  [FAIL] %s\n' "$*"; RC=1; }
 ok()   { printf '  [ok]   %s\n' "$*"; }
+skip() { printf '  [skip] %s\n' "$*"; }
+
+# Runtime SELinux type of this process, and the gate built on it.
+#
+# Several of this topic's artefacts are readable only by root: /etc/aide.conf
+# is 0600 by deliberate design, and the AIDE database and log directory carry
+# types a confined staff shell cannot read. Starting the unit needs polkit
+# authorisation it does not have either.
+#
+# Without this gate every one of those checks reads nothing and reports FAIL,
+# so a correctly hardened host fails its own verify from a staff_t shell —
+# "no inverted rules found", "/boot no longer in scope", "baseline missing or
+# empty", all of them artefacts of the reading domain rather than of the state.
+# SKIP is the tree-wide convention for exactly this, and the reference article
+# promises it.
+current_type() {
+  id -Z 2>/dev/null | awk -F: '{print $3}'
+}
+
+is_sysadm_t() {
+  [[ "$(current_type)" == "sysadm_t" ]]
+}
 
 check_file() {
   local path="$1" mode="$2" seltype="$3"
@@ -60,7 +82,7 @@ context_matches() {
     return
   }
   case "$ftype" in
-    *"symbolic link"*) mode="link" ;;
+    *"symbolic link"*) mode="lnk_file" ;;
     "directory") mode="dir" ;;
     *) mode="file" ;;
   esac
@@ -123,6 +145,13 @@ verify_timers() {
 
 verify_scope() {
   printf '\n== AIDE scope ==\n'
+  # /etc/aide.conf is 0600 by design and the baseline carries aide_db_t;
+  # neither is readable from staff_t, and an unreadable file yields the same
+  # empty grep as a genuinely missing rule.
+  if ! is_sysadm_t; then
+    skip 'AIDE scope -- needs sysadm_t'
+    return
+  fi
   local n
   n="$(grep -c '^# ic-inverted' "$AIDE_CONF" 2>/dev/null || true)"
   if [[ "$n" -gt 0 ]]; then
@@ -166,6 +195,12 @@ verify_accept_lists() {
 
 verify_run() {
   printf '\n== full run through the unit ==\n'
+  # Starting the unit needs polkit authorisation a confined staff shell does
+  # not hold; without the gate this stalls on an interactive password prompt.
+  if ! is_sysadm_t; then
+    skip 'unit run -- needs sysadm_t'
+    return
+  fi
   systemctl reset-failed integrity-check.service 2>/dev/null || true
   local t0 t1 status
   t0="$(date +%s)"
@@ -183,6 +218,11 @@ verify_run() {
 
 verify_log() {
   printf '\n== run log ==\n'
+  # The log directory carries aide_log_t, which staff_t may not read.
+  if ! is_sysadm_t; then
+    skip 'run log -- needs sysadm_t'
+    return
+  fi
   local newest
   newest="$(find /var/log/aide -maxdepth 1 -name 'integrity-*.log' -printf '%T@ %p\n' \
     2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
@@ -200,6 +240,11 @@ verify_log() {
 
 verify_serialisation() {
   printf '\n== serialisation ==\n'
+  # Same polkit constraint as verify_run.
+  if ! is_sysadm_t; then
+    skip 'serialisation -- needs sysadm_t'
+    return
+  fi
   systemctl start --no-block integrity-check.service 2>/dev/null || true
   sleep 2
   local t0 t1

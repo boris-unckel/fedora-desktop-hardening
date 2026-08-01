@@ -3,3 +3,13 @@
 (allow cupsd_t cupsd_lpd_t (process2 (nnp_transition)))
 (allow cupsd_t cupsd_config_t (process2 (nnp_transition)))
 (allow cupsd_t cups_pdf_t (process2 (nnp_transition)))
+;; cups-deviced enumerates every backend under /usr/lib/cups/backend at start-up.
+;; Sixteen of the seventeen carry bin_t and therefore run in cupsd_t with no
+;; transition, which NoNewPrivileges permits. cups-brf is the only one with a
+;; domain of its own, and stock policy carries
+;;   type_transition cupsd_t cups_brf_exec_t:process cups_brf_t
+;; so the transition is intended -- NNP is what blocks it. Without this rule the
+;; enumeration produces a denial pair on every boot ({ nnp_transition }, then
+;; { execute_no_trans } as the kernel falls back), which is noise no operator
+;; action resolves. Restores stock-intended behaviour; grants nothing beyond it.
+(allow cupsd_t cups_brf_t (process2 (nnp_transition)))

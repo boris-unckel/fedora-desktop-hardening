@@ -61,14 +61,20 @@ part of that class with whole-host impact. See
 | Cloud-testability | Count | Topics |
 |---|---|---|
 | Full | 15 | headless component scenario passes with real effectiveness |
-| Full (presence) | 3 | headless component scenario passes; effectiveness deferred to session tier |
+| Full (presence) | 4 | headless component scenario passes; effectiveness deferred to session tier |
 | Session | 4 | needs the headless session substrate |
 | HW-gap | 4 | needs hardware a virtual machine lacks |
 
-Eighteen of twenty-six topics are meaningfully verifiable on a stock headless virtual
+Nineteen of twenty-seven topics are meaningfully verifiable on a stock headless virtual
 machine (Full plus Full-presence). Four need the session substrate, and four need real
 hardware. The four Foundation layers are all Full and are a prerequisite for every
 scenario.
+
+As of the 2026-08 full run all nineteen pass, and twenty-two of them run in the cumulative
+system tier — `topic_staff_wayland_memfd` is component-tested but held out of the system
+tier because it needs a Wayland session. A row missing from this table is not a neutral
+omission: `topic_flatpak_kfd_device` was absent here from its creation until that run, so
+it was never assigned a tier and never entered the cumulative converge.
 
 ## Foundation layers
 
@@ -117,6 +123,7 @@ vacuously green.
 | `topic_flatpak_audio_sandbox` | flatpak audio sandbox policy | `flatpak_audio_sandbox.cil` loaded; allow rule present; AVC-class-clean | P3 |
 | `topic_flatpak_oci_pull_dbus` | flatpak OCI-pull D-Bus policy | `flatpak_oci_pull_dbus.cil` loaded; allow rule present; AVC-class-clean | P3 |
 | `topic_staff_wayland_memfd` | Wayland memfd policy | `staff_wayland_memfd.cil` loaded; map and write rules present; AVC-class-clean | P3 |
+| `topic_flatpak_kfd_device` | AMD compute-device access for the flatpak bwrap sandbox | `flatpak_kfd_device.cil` loaded; `staff_t x hsa_device_t : chr_file getattr` present; AVC-class-clean. The functional branch needs an AMD GPU and is a real HW-gap, confirmed out-of-band on hardware | P3 |
 
 ### Session-dependent
 

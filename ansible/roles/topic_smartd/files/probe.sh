@@ -83,17 +83,31 @@ probe_unit_state() {
 }
 
 probe_binary_layout() {
-  printf -- '--- binary path layout ---\n'
-  local p
+  printf -- '--- binary path layout and executable label ---\n'
+  # The label is reported alongside the layout because the two only make sense
+  # together: the type transition into the confined domain fires on the label
+  # of the regular file, while the compatibility symlink is expected to keep
+  # the generic type — entries qualified with `--` in file_contexts match
+  # regular files only. `stat` does not follow symlinks, so each path reports
+  # its own context.
+  local p ctx
   for p in "${BINARY_PATH}" "${BINARY_SYMLINK}"; do
+    ctx=$(stat -c '%C' "${p}" 2>/dev/null || printf '?')
     if [[ -L "${p}" ]]; then
-      printf 'symlink  %s -> %s\n' "${p}" "$(readlink "${p}")"
+      printf 'symlink  %s -> %s  [%s]\n' "${p}" "$(readlink "${p}")" "${ctx}"
     elif [[ -f "${p}" ]]; then
-      printf 'regular  %s\n' "${p}"
+      printf 'regular  %s  [%s]\n' "${p}" "${ctx}"
     else
       printf 'missing  %s\n' "${p}"
     fi
   done
+  # What file_contexts resolves for the regular file, for comparison with the
+  # label above. A mismatch between the two is the interesting state: the
+  # mapping can be correct while the inode is not.
+  if command -v matchpathcon >/dev/null 2>&1; then
+    printf 'mapping  %s\n' \
+      "$(matchpathcon -m file "${BINARY_PATH}" 2>/dev/null || printf '?')"
+  fi
 }
 
 probe_dropin_files() {

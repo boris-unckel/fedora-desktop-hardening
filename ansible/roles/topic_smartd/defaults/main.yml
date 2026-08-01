@@ -22,3 +22,22 @@ topic_smartd_expected_selinux_domain: "fsdaemon_t"
 # Topic-owned CIL module name and load priority.
 topic_smartd_cil_module_name: "nnp_smartd"
 topic_smartd_cil_priority: 400
+
+# Executable label. The init_t -> fsdaemon_t type transition fires on the
+# label of the binary, not on the unit file, so this topic owns that property:
+# it asserts the label and restores it, instead of assuming the distribution
+# policy carries the mapping for the path the binary actually occupies.
+topic_smartd_binary_path: "/usr/bin/smartd"
+topic_smartd_expected_exec_type: "fsdaemon_exec_t"
+
+# The compatibility symlink keeps the generic type. Entries qualified with
+# `--` in file_contexts match regular files only, so no rule applies to the
+# link, and its type is not a defect.
+topic_smartd_binary_symlink: "/usr/sbin/smartd"
+topic_smartd_symlink_expected_type: "bin_t"
+
+# Restrict the local mapping to regular files, mirroring the `--` qualifier of
+# the distribution entry. An unqualified mapping also matches the compatibility
+# symlink and turns it into a permanent context-drift report that nothing ever
+# resolves.
+topic_smartd_fcontext_ftype: "f"

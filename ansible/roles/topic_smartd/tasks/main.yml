@@ -9,8 +9,12 @@
 #   1. Push CIL source to /usr/local/share/selinux/.
 #   2. Install CIL module via semodule -X 400 -i (handler).
 #   3. flush_handlers — the CIL must be loaded before the NNP drop-in.
-#   4. Push the three drop-in INI files.
-#   5. Daemon-reload + restart (handlers).
+#   4. Assert the executable label mapping and restore the label if it drifted.
+#      Before the drop-ins, because a relabel moves the daemon into the
+#      confined domain and the NNP drop-in needs the CIL rule for that domain
+#      to be loaded first.
+#   5. Push the three drop-in INI files.
+#   6. Daemon-reload + restart (handlers).
 # A change to any of the four shipping artefacts notifies the appropriate
 # handler chain. Live-state probe is read-only.
 
@@ -54,6 +58,55 @@
 
     - name: "topic_smartd | flush handlers (CIL must be loaded before NNP drop-in)"
       ansible.builtin.meta: flush_handlers
+
+    # Two separate steps, because they answer two different questions and
+    # either can be satisfied while the other is not:
+    #
+    #   the mapping   is what file_contexts resolves for the path. It has to
+    #                 be local, because a policy-package transaction can
+    #                 rebuild the context table without a generated mapping
+    #                 present and relabel /usr/bin inside that window; a local
+    #                 mapping is not part of that rebuild and survives it.
+    #   the label     is what the inode currently carries. The mapping being
+    #                 correct says nothing about it — that is exactly the case
+    #                 this pair is built for.
+    - name: "topic_smartd | executable label mapping present (regular files only)"
+      community.general.sefcontext:
+        target: "{{ topic_smartd_binary_path }}"
+        setype: "{{ topic_smartd_expected_exec_type }}"
+        ftype: "{{ topic_smartd_fcontext_ftype }}"
+        state: present
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+
+    - name: "topic_smartd | read the executable's current SELinux context"
+      ansible.builtin.command:
+        argv:
+          - stat
+          - "-c"
+          - "%C"
+          - "{{ topic_smartd_binary_path }}"
+      register: smartd_exec_context
+      changed_when: false
+      failed_when: false
+
+    # Deliberately compared against the expected type as a constant, not
+    # against `matchpathcon`. Comparing the label to the table would pass
+    # whenever both are wrong together, which is the failure mode that makes
+    # this check worth having at all.
+    - name: "topic_smartd | restore the executable label when it has drifted"
+      ansible.builtin.command:
+        argv:
+          - restorecon
+          - "-v"
+          - "{{ topic_smartd_binary_path }}"
+      become: true
+      become_flags: "-r sysadm_r -t sysadm_t"
+      when: >-
+        topic_smartd_expected_exec_type not in
+        (smartd_exec_context.stdout | default('') | trim)
+      notify:
+        - "topic_smartd exec label changed"
 
     - name: "topic_smartd | drop-in directory present"
       ansible.builtin.file:

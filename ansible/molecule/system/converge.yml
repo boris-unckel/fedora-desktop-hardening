@@ -16,40 +16,12 @@
   hosts: all
   become: true
   become_flags: "-r sysadm_r -t sysadm_t"
+  # The topic list is shared with verify.yml -- see that file for why it is not
+  # duplicated here.
+  vars_files:
+    - vars/system-tier-topics.yml
   vars:
     foundation_sudo_roles_user: "{{ ansible_user }}"
-    # Each topic role self-verifies during apply, so the cumulative converge
-    # only carries topics whose verify.sh is green on a headless VM. Two
-    # otherwise-cloud-testable topics are held out as documented open items,
-    # not included here: topic_cups (clean except an avc_clean count still
-    # being classified) and topic_integrity_monitoring (its verify runs the
-    # full four-check pass and a second serialisation start, which is too
-    # long-running to carry inside a cumulative converge; it has its own
-    # component scenario). Session and Wayland-session topics are excluded by
-    # design.
-    system_tier_topics:
-      # P1 — whole-host / boot-failure class, applied first.
-      - topic_kernel_hardening
-      - topic_dbus_broker
-      - topic_network_manager
-      - topic_auditd
-      - topic_plymouth
-      # P2 — service-level blast radius.
-      - topic_chronyd
-      - topic_cron
-      - topic_rngd
-      - topic_tuned
-      - topic_udisks2
-      - topic_avahi_daemon
-      - topic_alsa_state
-      - topic_smartd
-      - topic_thermald
-      # P3 — post-login / configuration-only.
-      - topic_flatpak_collection_id
-      - topic_python_pip_user_tree
-      - topic_switcheroo_control
-      - topic_flatpak_audio_sandbox
-      - topic_flatpak_oci_pull_dbus
   tasks:
     - name: "Apply topic role: {{ item }}"
       ansible.builtin.include_role:

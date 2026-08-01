@@ -5,3 +5,69 @@
 # connection user to staff_u, and applies the four foundation roles in order.
 - name: Prepare the substrate and foundation tier
   ansible.builtin.import_playbook: ../../../../molecule/shared/foundation_prepare.yml
+
+# The compositor packages are installed HERE rather than in the base snapshot,
+# by the base's own stated design: the GNOME stack is kept out of the baked
+# image so it does not stretch every managed node's boot, and the few topics
+# that assert a desktop package carry it in their own scenario. This topic is
+# the presence-only case that rule was written for.
+#
+# Without this play the role is not merely untested, it is silently skipped:
+# preflight fails the rpm presence assert and gates the whole role off, so the
+# scenario would report a pass having exercised nothing. That is the outcome
+# this play exists to prevent.
+#
+# Only the two packages, never a desktop group: gnome-shell and mutter satisfy
+# the presence assert, whereas a group install pulls gdm and the graphical
+# target onto a headless node.
+- name: Provide the compositor packages the topic preflight asserts
+  hosts: all
+  become: true
+  # The role switch is required, not decorative. The shared prepare above has
+  # already mapped the connection user to staff_u, so a plain `become: true`
+  # lands in the sudo domain of that role, which may not read the module file
+  # Ansible stages under the unprivileged user's home -- the failure surfaces
+  # as a bare "[Errno 13] Permission denied" on AnsiballZ_dnf5.py, naming the
+  # temp file rather than the domain. Every other play in this tree that runs
+  # after the mapping carries the same flags.
+  become_flags: "-r sysadm_r -t sysadm_t"
+  gather_facts: false
+  tasks:
+    # The package list comes from the role's own defaults so the scenario
+    # cannot drift from the preflight it is meant to satisfy.
+    #
+    # Loaded under a name rather than into the play's variable space: an
+    # unnamed include_vars sets EVERY key in that file as a host fact, and host
+    # facts outrank role defaults. The role would then be applied against
+    # values injected by its own test scaffolding instead of its defaults --
+    # identical today, silently authoritative the moment either side changes.
+    - name: Load the role defaults for the required-package list
+      ansible.builtin.include_vars:
+        file: ../../defaults/main.yml
+        name: swm_defaults
+
+    # Probe before installing, mirroring the shared prepare: on a node that
+    # already carries the packages this keeps the scenario off the network
+    # entirely. Managed nodes have no public IPv4 and reach the mirrors over
+    # IPv6 only, so an avoidable metadata refresh is an avoidable failure.
+    - name: Probe whether the compositor packages are already present
+      ansible.builtin.command: "rpm -q {{ item }}"
+      loop: "{{ swm_defaults.topic_staff_wayland_memfd_required_packages }}"
+      register: compositor_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Install the missing compositor packages
+      ansible.builtin.dnf:
+        name: "{{ compositor_probe.results | rejectattr('rc', 'equalto', 0) | map(attribute='item') | list }}"
+        state: present
+      when: compositor_probe.results | rejectattr('rc', 'equalto', 0) | list | length > 0
+
+    # Presence is the precondition for the whole scenario, so it is asserted
+    # here and not left for preflight to discover: a failure at this point
+    # names the substrate as the cause, while the same failure inside preflight
+    # reads as a defect in the role.
+    - name: Assert the compositor packages are now present
+      ansible.builtin.command: "rpm -q {{ item }}"
+      loop: "{{ swm_defaults.topic_staff_wayland_memfd_required_packages }}"
+      changed_when: false

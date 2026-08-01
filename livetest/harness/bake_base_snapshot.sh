@@ -14,12 +14,18 @@
 #     PerSourcePenalties): managed nodes that boot from the base reach SSH
 #     immediately instead of racing a long first-boot cloud-init -- the cause
 #     of the earlier "node unreachable" timeouts.
-#   - The union of every topic role's required packages (a desktop-like
-#     target): topic preflights that assert the daemon package and vendor unit
-#     no longer fail on a minimal image.
-#   - SELinux set to enforcing in the persistent config, with the filesystem
-#     relabelled while permissive: managed nodes boot already-enforcing, so the
-#     audit-cleanliness checks see no permissive->enforcing transition noise.
+#   - The union of every cloud-testable topic role's required packages: topic
+#     preflights that assert the daemon package and vendor unit no longer fail
+#     on a minimal image. Desktop packages are excluded -- see the note at the
+#     package list.
+#   - The filesystem relabelled, while SELinux stays PERMISSIVE in the base.
+#     Permissive is deliberate and the reason is written out at the sed call
+#     below: a clone re-runs cloud-init (Hetzner assigns a fresh instance-id),
+#     cloud-init under enforcing stalls, and sshd is ordered after
+#     cloud-init.target, so the node would never come up. foundation_prepare
+#     owns the switch to enforcing and the reboot that follows it, which is
+#     what gets the node to a clean enforcing boot with no mid-run
+#     permissive->enforcing noise.
 
 SCRIPT_NAME="bake"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,10 +35,10 @@ source "${HERE}/lib.sh"
 readonly BUILDER_NAME="livetest-builder"
 readonly SNAPSHOT_DESC="livetest-base-${OS_IMAGE}"
 
-# The union of every topic role's required packages plus the SELinux management
-# tooling the foundation roles call. Presence-only desktop packages
-# (gnome-shell, mutter, keepassxc) are included so the session-tier topics and
-# the cumulative system tier never fail a package assertion.
+# The union of every CLOUD-TESTABLE topic role's required packages plus the
+# SELinux management tooling the foundation roles call. The desktop packages
+# are deliberately absent -- see the note below the list, which is the binding
+# statement.
 readonly BASE_PACKAGES=(
   # SELinux management tooling (foundation substrate)
   policycoreutils policycoreutils-python-utils selinux-policy-targeted
@@ -44,11 +50,16 @@ readonly BASE_PACKAGES=(
   # session / flatpak / python topics (presence-oriented)
   flatpak bubblewrap ostree xdg-desktop-portal python3 python3-pip
 )
-# The full GNOME desktop stack (gnome-shell, mutter, gdm) is deliberately NOT
-# baked in. It pulls gdm and the graphical target, which thrashes a headless VM
-# and stretches the clone boot past five minutes. The component tier needs none
-# of it; the few session-tier topics that assert a desktop package are handled
-# in their own scenario, not by burdening every node's boot.
+# The desktop packages (gnome-shell, mutter, keepassxc) are deliberately NOT
+# baked in. A desktop group install pulls gdm and the graphical target, which
+# thrashes a headless VM and stretches the clone boot past five minutes. The
+# component tier needs none of it; the few topics that assert a desktop package
+# install it in their own scenario prepare, not by burdening every node's boot.
+# topic_staff_wayland_memfd/molecule/default/prepare.yml is the worked example.
+#
+# The consequence is load-bearing and easy to get wrong: a topic that asserts a
+# desktop package and does NOT install it in its own prepare is gated off by
+# its preflight, and its scenario then passes having exercised nothing.
 
 builder_ipv4() {
   hcloud server ip "${BUILDER_NAME}" 2>/dev/null || true

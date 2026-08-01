@@ -14,14 +14,44 @@
       ansible.builtin.systemd:
         daemon_reload: true
 
-    - name: "verify | run the role verify script"
+    # Both contexts, matching every other component scenario. This one used to
+    # run the sysadm_t pass alone, and that gap hid a real defect: the script
+    # carried no sysadm_t gate at all, so from a confined staff shell every
+    # root-only read (0600 aide.conf, the aide_db_t baseline, the aide_log_t log
+    # directory) reported FAIL and the unit start stalled on a polkit prompt.
+    # The component tier passed; the system tier, which runs both contexts for
+    # every topic, is what surfaced it. A single-context component scenario is
+    # blind in precisely the direction the SKIP convention exists to cover.
+    - name: "verify | run the role verify script in the staff_t context"
+      ansible.builtin.script: "../../files/verify.sh"
+      become: false
+      register: verify_staff
+      changed_when: false
+      failed_when: false
+
+    - name: "verify | report the staff_t pass"
+      ansible.builtin.debug:
+        var: verify_staff.stdout_lines
+
+    - name: "verify | run the role verify script in the sysadm_t context"
       ansible.builtin.script: "../../files/verify.sh"
       register: verify_out
       changed_when: false
+      failed_when: false
 
     - name: "verify | report"
       ansible.builtin.debug:
         var: verify_out.stdout_lines
+
+    - name: "verify | both contexts must exit 0"
+      ansible.builtin.assert:
+        that:
+          - verify_staff.rc == 0
+          - verify_out.rc == 0
+        success_msg: "verify.sh clean in staff_t and sysadm_t"
+        fail_msg: >-
+          verify drift: staff_t rc={{ verify_staff.rc }},
+          sysadm_t rc={{ verify_out.rc }}
 
     - name: "verify | the AIDE check still runs confined"
       ansible.builtin.command:

@@ -55,6 +55,7 @@ printf '\n  \033[1;33m! Integrity check:\033[0m %s\n' "$_ic_what"
 printf '    Last run: %s\n' "${_ic_ts:-?}"
 printf '    Log:      %s\n' "${_ic_log:-/var/log/aide/integrity-*.log}"
 printf '    Review:   sudo -r sysadm_r -t sysadm_t cat <log>\n'
-printf '    Accept:   sudo /usr/local/sbin/integrity-check accept   (only after review)\n\n'
+printf '    Accept:   sudo -r sysadm_r -t sysadm_t \\\n'
+printf '                /usr/local/sbin/integrity-check accept   (only after review)\n\n'
 
 unset _ic_rc _ic_ts _ic_mono _ic_ack _ic_what _ic_log

@@ -9,8 +9,8 @@
 #   1. Publish and load the CIL module. It must be in policy before the timer
 #      first fires, so the first check does not trip on the gap it closes.
 #   2. Install the wrapper, then the units, then the optional banner.
-#   3. Relabel everything (handler). A unit file without systemd_unit_file_t
-#      is not loaded at all.
+#   3. Relabel everything (handler). A unit file must carry a type PID 1 may
+#      read; systemd_unit_file_t guarantees that, an inherited type may not.
 #   4. Invert the AIDE scope -- COMPUTED on the target, never shipped.
 #   5. Ensure the acceptance-directory rule OUTSIDE the marker-guarded block,
 #      so a re-apply on a host that already carries the block still gets it.

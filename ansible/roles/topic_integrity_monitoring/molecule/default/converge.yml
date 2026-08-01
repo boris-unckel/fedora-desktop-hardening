@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 ---
 # Converge: apply the single topic under test. The foundation substrate is
-# established by prepare.yml; the role's meta dependencies re-assert the
+# established by prepare.yml; the topic role's meta dependencies re-assert the
 # foundation idempotently. Privileged tasks run in the role-switched sysadm_t
 # context, matching the operator administration model.
-- name: Converge topic_integrity_monitoring
+- name: Converge
   hosts: all
-  gather_facts: true
-  roles:
-    - role: topic_integrity_monitoring
+  become: true
+  become_flags: "-r sysadm_r -t sysadm_t"
+  vars:
+    foundation_sudo_roles_user: "{{ ansible_user }}"
+  tasks:
+    - name: Apply the topic role under test
+      ansible.builtin.include_role:
+        name: topic_integrity_monitoring

@@ -47,7 +47,7 @@ Per-command escalation to `sysadm_t` uses the canonical form:
 sudo -r sysadm_r -t sysadm_t <cmd>
 ```
 
-The transition lasts for the duration of `<cmd>` only. The next plain `sudo` invocation lands back in `staff_sudo_t` because `sudo` invoked without `-r` from a `staff_u` shell does **not** transition to `sysadm_t`. `staff_sudo_t` is intentionally SELinux-blind: stock policy denies it write/open on `semanage_store_t`, `auditd_log_t`, `auditd_etc_t`, the AIDE database type, several `*_exec_t` types (notably `udev_exec_t` and `systemd_*_exec_t`), and creating new files in non-systemd `/etc/**` subtrees (`/etc/sysctl.d/`, `/etc/modprobe.d/`, `/etc/logrotate.d/`).
+The transition lasts for the duration of `<cmd>` only. The next plain `sudo` invocation lands back in `staff_sudo_t` because `sudo` invoked without `-r` from a `staff_u` shell does **not** transition to `sysadm_t`. `staff_sudo_t` is intentionally SELinux-blind: stock policy denies it write/open on `semanage_store_t`, `auditd_log_t`, `auditd_etc_t`, several `*_exec_t` types (notably `udev_exec_t` and `systemd_*_exec_t`), and creating new files in non-systemd `/etc/**` subtrees (`/etc/sysctl.d/`, `/etc/modprobe.d/`, `/etc/logrotate.d/`).
 
 The following commands and command classes mandate the role switch on a `staff_u`-confined host. The list is the operational surface — running any of them under plain `sudo` produces an AVC whose source context is `staff_t` or `staff_sudo_t`:
 
@@ -58,7 +58,6 @@ The following commands and command classes mandate the role switch on a `staff_u
 - `udevadm` (for trigger and control operations, not the read-only `info` form).
 - `mandb --create`.
 - `sysctl --system` and writes to namespaced sysctl keys such as `kernel.unprivileged_bpf_disabled`, `net.core.bpf_jit_harden`, `fs.protected_*`.
-- `aide --init` and `aide --check` when running interactively (cron-driven runs are out of scope here).
 - `lynis audit system`.
 - `flatpak` write subcommands (`install`, `update`, `uninstall`, `remote-add`, `remote-modify`).
 - `install`, `tee`, `cp` into non-systemd `/etc/**` subtrees.

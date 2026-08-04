@@ -2,7 +2,7 @@
 ---
 # System-tier preparation.
 #
-# Three stages run in order:
+# Two stages run in order:
 #   1. Pre-hardening baseline capture on the still-stock node (permissive,
 #      unconfined, topics not yet applied) so the post-hardening scores have a
 #      reference. The scoring tools are installed best-effort; on a node whose
@@ -11,8 +11,6 @@
 #      the run. systemd-analyze is built into systemd and always runs.
 #   2. The shared foundation substrate (SELinux tooling probe, staff_u mapping,
 #      enforcing, reboot-to-enforcing, then the four foundation roles).
-#   3. The one topic precondition the operator owns in production: the AIDE
-#      baseline database. Without it the aide topic would gate itself out.
 
 - name: Capture the pre-hardening security baseline on the stock node
   hosts: all
@@ -104,8 +102,5 @@
       when: (scoring_tools.rc | default(1)) == 0
 
 # Stage 2: the shared foundation substrate (includes the reboot to enforcing).
-# topic_integrity_monitoring is held out of the system tier (see converge.yml).
-# No baseline seed is needed here in any case: that role takes the first
-# baseline itself when none exists.
 - name: Prepare the substrate and foundation tier
   ansible.builtin.import_playbook: ../shared/foundation_prepare.yml

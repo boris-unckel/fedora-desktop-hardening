@@ -53,7 +53,7 @@ done
 
 Two properties of this comparison matter:
 
-- It compares the **full** context, including the SELinux user field. `restorecon -n` reports type differences only, so a path that is correct in type and wrong in user is invisible to it — and to any integrity check built on top of it. Adding `-F` to the dry run (`restorecon -F -n -v -R <dir>`) restores the user field to the comparison and needs no package beyond `policycoreutils`.
+- It compares the **full** context, including the SELinux user field. `restorecon -n` reports type differences only, so a path that is correct in type and wrong in user is invisible to it. Adding `-F` to the dry run (`restorecon -F -n -v -R <dir>`) restores the user field to the comparison and needs no package beyond `policycoreutils`.
 - It derives the file type from `stat`, not from `[[ -d ]]` or `[[ -L ]]`. Those operators report false when the path cannot be stat'ed, which silently selects the regular-file rule and yields a plausible but wrong expectation. A path whose type cannot be determined should be reported as such, not guessed at.
 
 The drop-in **directory** deserves its own line in any such check. It is created by the deploy step, it is never revisited, and a relabel pass that lists only the files inside it leaves the directory on its inherited label permanently.

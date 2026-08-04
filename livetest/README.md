@@ -19,18 +19,17 @@ per-topic disposition matrix, and the captured scores — is
 [reports/component-tier-first-run.md](reports/component-tier-first-run.md). As of
 2026-08-01:
 
-- **Component tier: 23 of 23 green.** Every role that ships a component scenario passes its
+- **Component tier: 22 of 22 green.** Every role that ships a component scenario passes its
   full Molecule scenario from the baked base snapshot: create, foundation prepare, converge,
   idempotence with zero changed tasks, verify in both SELinux contexts (`staff_t` and
-  `sysadm_t`), destroy. The two former deferrals are resolved — `cups` was a real gap in its
-  own CIL module, and `integrity_monitoring` (which replaced the `aide` topic) had never
-  completed a converge at all. The four session topics (`keepassxc`, `mozilla_firefox`,
+  `sysadm_t`), destroy. The former `cups` deferral is resolved — it was a real gap in its
+  own CIL module. The four session topics (`keepassxc`, `mozilla_firefox`,
   `mozilla_thunderbird`, `flatpak_portal_cache`) ship no component scenario and stay outside
   cloud scope.
-- **System tier: fully green over 22 topics.** Cumulative converge of the Foundation plus the
-  22 cloud-testable topics, a second converge with zero changed tasks, a real reboot with
+- **System tier: fully green over 21 topics.** Cumulative converge of the Foundation plus the
+  21 cloud-testable topics, a second converge with zero changed tasks, a real reboot with
   boot-survival (`is-system-running=running`), and post-reboot per-topic persistence clean in
-  both SELinux contexts for every one of the 22. `staff_wayland_memfd` is the one
+  both SELinux contexts for every one of the 21. `staff_wayland_memfd` is the one
   component-tested topic held out of the system tier, by design: it needs a Wayland session.
 - **Security scores captured (pre → post hardening):** OpenSCAP (`ssg-fedora-ds`) pass
   count 184 → 201; Lynis hardening index 67 → 75; `systemd-analyze security` exposure
@@ -58,7 +57,7 @@ silently diverged, so the run applied more topics than it checked.
 
 The suite verifies the rest of the tree; it adds nothing to the end-state definition.
 
-- `../ansible/` is the system under test. Four Foundation roles and 27 topic roles apply
+- `../ansible/` is the system under test. Four Foundation roles and 26 topic roles apply
   the hardened end state. Each role ships `files/probe.sh` (a read-only inventory) and
   `files/verify.sh` (computes expected versus observed and exits non-zero on drift); these
   are the executable test cases.

@@ -33,7 +33,7 @@ livetest/
 The `livetest/` suite exercises these roles on ephemeral cloud virtual machines, with the
 Ansible controller separate from the target, to confirm the end state applies, verifies,
 and survives a reboot away from the authoring host. The suite is green through its system
-tier: the Foundation plus 22 cloud-testable topics apply cumulatively, are idempotent,
+tier: the Foundation plus 21 cloud-testable topics apply cumulatively, are idempotent,
 survive a real reboot, and verify post-reboot in both SELinux contexts, with pre/post
 security scores captured. See `livetest/README.md` for the current status.
 
@@ -53,7 +53,7 @@ A topic article never duplicates a pattern. If the same trap shows up in three t
 - Already have a hardened host and want to apply one more topic: the recipe at `docs/how-to/apply-topic.md` covers manifest preparation, role apply, and verify.
 - A deployment broke the boot: the recovery procedure at `docs/how-to/recover-from-boot-failure.md` covers live-media boot, drop-in rollback, and CIL module backout.
 
-All articles named above exist, as do the four Foundation references, the 27 topic references, and the pattern articles under `docs/explanation/`.
+All articles named above exist, as do the four Foundation references, the 26 topic references, and the pattern articles under `docs/explanation/`.
 
 ## Scope and assumptions
 

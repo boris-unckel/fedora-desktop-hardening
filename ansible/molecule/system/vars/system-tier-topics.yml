@@ -39,9 +39,3 @@ system_tier_topics:
   - topic_flatpak_audio_sandbox
   - topic_flatpak_oci_pull_dbus
   - topic_flatpak_kfd_device
-  # Deliberately last, out of P-order. The role takes the FIRST integrity
-  # baseline itself when none exists, so it must run after every other topic
-  # has written its files -- otherwise the baseline is stale the moment the
-  # converge finishes. This is signal quality, not correctness: findings are a
-  # documented PASS, only a tool failure is a FAIL.
-  - topic_integrity_monitoring

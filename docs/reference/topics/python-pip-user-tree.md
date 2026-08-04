@@ -154,7 +154,7 @@ The rollback posture is two-stage.
 
 - **Stage 2.** In addition to Stage 1, drop the symmetric `--user` discipline from operator update scripts. Reverts the topic-owned pip-discipline surface entirely. The host returns to a state where pip behaviour is governed only by Foundation Layer 1 (the SELinux DAC-caps gap on `staff_sudo_t`) plus pip's own writability fallback.
 
-The role does **not** ship a Stage-2 task. The operator update script is operator-policy, not Topic-policy, and the role does not auto-edit any operator-named file. Filesystem-integrity tracking via the audit and logging baseline is not applied to the marker (the marker is rapidly Python-minor-bump-volatile, so adding it to the integrity database would create more drift noise than signal).
+The role does **not** ship a Stage-2 task. The operator update script is operator-policy, not Topic-policy, and the role does not auto-edit any operator-named file.
 
 ## Verification
 

@@ -63,8 +63,10 @@ Edge cases the mitigation does not cover:
 - `/etc/sudoers.d/*` must be mode `0440`, enforced by `visudo -c`. Do not apply `0644` here. The sudo binary runs as root and does not need world-read.
 - `/etc/security/limits.d/*` and `/etc/pam.d/*` are world-readable by package default. Operators rarely produce them through the affected redirect pattern, and the readability failure mode does not apply to in-tree files installed by packages.
 - Some daemons read configuration through a helper that runs under a different uid than the main process. The helper's uid determines whether `0640` with a matching group is sufficient; the `0644` rule remains the safer default unless the operator can prove the helper's uid matches the file's group.
+- Files that their owning tool rewrites by write-new-then-rename — for example the libdnf5 system state — lose any mode set after the fact with the next run of that tool. Both patterns hold only for files written once; the rewrite case needs the mode set where the tool writes, as described in [Replaced files lose their mode](replaced-files-lose-mode.md).
 
 ## See also
 
 - [UMASK 0027](../reference/foundation/umask.md) — The Foundation layer that establishes the system-wide UMASK from which this trap follows.
+- [Replaced files lose their mode](replaced-files-lose-mode.md) — Why a `chmod` does not hold on a file its owning tool replaces by rename.
 - [Drop-in files and SELinux context inheritance](dropin-selinux-context-inheritance.md) — The SELinux sibling of this trap. The same deploy step leaves the file with the type of its parent directory instead of the type its path maps to; fixing the mode does not fix the label.

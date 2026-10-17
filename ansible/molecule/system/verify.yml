@@ -2,12 +2,13 @@
 ---
 # System-tier verify (post-reboot).
 #
-# Two kinds of check:
-#   1. Persistence gate (hard): every applied topic's verify.sh must exit 0 in
-#      both the staff_t and the sysadm_t context after the real reboot. This is
-#      the cumulative proof that the hardening took effect, survived the boot,
-#      and that no topic's drop-in or CIL module was lost or conflicted with
-#      another's. A non-zero exit fails the run.
+# Three kinds of check:
+#   1. Persistence gate (hard): every foundation role's and every applied
+#      topic's verify.sh must exit 0 in both the staff_t and the sysadm_t
+#      context after the real reboot. This is the cumulative proof that the
+#      hardening took effect, survived the boot, and that no topic's drop-in or
+#      CIL module was lost or conflicted with another's. A non-zero exit fails
+#      the run.
 #   2. Security scoring (recorded): the post-hardening systemd-analyze exposure,
 #      OpenSCAP pass ratio, and Lynis hardening index are captured and diffed
 #      against the pre-hardening baseline from prepare.yml. On this first
@@ -15,6 +16,10 @@
 #      tool quirk cannot mask the boot-survival and persistence result; the
 #      numbers feed the report and the threshold gate can be armed once a
 #      baseline trend exists.
+#   3. dnf state-file proof (hard): side_effect.yml ran real dnf transactions
+#      before the reboot and recorded, per transaction, whether libdnf5 rewrote
+#      its state files and whether the foundation_umask action left them 0644.
+#      The record must hold one PASS per transaction and no FAIL.
 - name: Verify — post-reboot persistence and security scoring
   hosts: all
   gather_facts: false
@@ -49,22 +54,30 @@
       ansible.builtin.debug:
         msg: "is-system-running = {{ post_boot_state.stdout | trim }}"
 
-    - name: Run each topic verify.sh in the staff_t context
+    - name: Run each foundation and topic verify.sh in the staff_t context
       ansible.builtin.script: "{{ playbook_dir }}/../../roles/{{ item }}/files/verify.sh"
       become: false
+      # foundation_sudo_roles' verify takes the mapped user from the
+      # environment, as the role itself passes it; other scripts ignore it.
+      environment:
+        FOUNDATION_SUDO_ROLES_USER: "{{ ansible_user }}"
       changed_when: false
       failed_when: false
       register: verify_staff
-      loop: "{{ system_tier_topics }}"
+      loop: "{{ system_tier_foundation + system_tier_topics }}"
 
-    - name: Run each topic verify.sh in the sysadm_t context
+    - name: Run each foundation and topic verify.sh in the sysadm_t context
       ansible.builtin.script: "{{ playbook_dir }}/../../roles/{{ item }}/files/verify.sh"
       become: true
       become_flags: "-r sysadm_r -t sysadm_t"
+      # foundation_sudo_roles' verify takes the mapped user from the
+      # environment, as the role itself passes it; other scripts ignore it.
+      environment:
+        FOUNDATION_SUDO_ROLES_USER: "{{ ansible_user }}"
       changed_when: false
       failed_when: false
       register: verify_sysadm
-      loop: "{{ system_tier_topics }}"
+      loop: "{{ system_tier_foundation + system_tier_topics }}"
 
     - name: Summarise per-topic persistence verdicts
       ansible.builtin.debug:
@@ -142,7 +155,36 @@
       ansible.builtin.debug:
         var: score_report.stdout_lines
 
-    - name: Persistence gate — every topic verify.sh exits 0 in both contexts
+    - name: Read the dnf state-file proof record written by side_effect.yml
+      become: true
+      # The record lives under /root (admin_home_t, 0700): the role switch is
+      # needed for the same DAC reason as the score capture above.
+      become_flags: "-r sysadm_r -t sysadm_t"
+      ansible.builtin.command:
+        argv: [cat, /root/livetest-baseline/dnf-state-proof.txt]
+      register: dnf_state_proof
+      changed_when: false
+      failed_when: false
+
+    - name: Report the dnf state-file proof record
+      ansible.builtin.debug:
+        var: dnf_state_proof.stdout_lines
+
+    - name: dnf state-file proof gate — every transaction rewrote the files and left them 0644
+      # Four transactions: two CLI reason changes, two ansible.builtin.dnf
+      # transactions. UNDECIDED (the transaction itself could not run) does not
+      # count as a pass: an unexercised front end is not a proven one.
+      ansible.builtin.assert:
+        that:
+          - dnf_state_proof.rc == 0
+          - (dnf_state_proof.stdout_lines | select('match', '^PASS ') | list | length) == 4
+          - (dnf_state_proof.stdout_lines | reject('match', '^PASS ') | list | length) == 0
+        success_msg: "dnf state-file proof OK: 4 of 4 transactions rewrote the state files and left them 0644"
+        fail_msg: >-
+          dnf state-file proof FAILED (rc={{ dnf_state_proof.rc }}):
+          {{ dnf_state_proof.stdout_lines | reject('match', '^PASS ') | list }}
+
+    - name: Persistence gate — every foundation and topic verify.sh exits 0 in both contexts
       # Last task in the play, by design: the scores and the full per-topic
       # verify detail above are captured first, so a single drifted topic does
       # not cost the run its security-trend record. This assert is still the
@@ -151,7 +193,9 @@
         that:
           - (verify_staff.results | selectattr('rc', 'ne', 0) | list | length) == 0
           - (verify_sysadm.results | selectattr('rc', 'ne', 0) | list | length) == 0
-        success_msg: "post-reboot persistence OK: all {{ system_tier_topics | length }} topics clean in both contexts"
+        success_msg: >-
+          post-reboot persistence OK: all {{ system_tier_foundation | length }} foundation
+          roles and {{ system_tier_topics | length }} topics clean in both contexts
         fail_msg: >-
           post-reboot persistence FAILED.
           staff_t failures: {{ verify_staff.results | selectattr('rc', 'ne', 0) | map(attribute='item') | list }};

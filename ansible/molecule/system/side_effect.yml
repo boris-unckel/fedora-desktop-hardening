@@ -10,6 +10,158 @@
 # within the timeout and reach a booted state. A host that never returns is a
 # boot-survival failure (the documented worst case); the reusable base snapshot
 # is unaffected and the managed node is torn down by the scenario either way.
+#
+# Before the reboot, a first play proves the foundation_umask dnf state-file
+# action under real transactions. The converge runs do not reliably produce a
+# dnf transaction after Layer 0 (the base snapshot already carries the
+# packages), so without this play the action would be applied but never
+# exercised. Two front ends are exercised, because the action is a libdnf5
+# plugin and each front end loads plugins on its own:
+#   - the dnf CLI, through sudo with the scenario's restrictive umask 0027:
+#     two reason changes (`dnf mark`), which are real transactions that rewrite
+#     the state files without downloading anything;
+#   - ansible.builtin.dnf: install and remove one small package, which needs
+#     package egress; a failed transaction is recorded UNDECIDED, never PASS.
+# Each step is recorded in /root/livetest-baseline/dnf-state-proof.txt;
+# verify.yml asserts the record after the reboot. The play leaves the host as
+# it found it: the reason is restored and the package returns to its prior
+# state.
+- name: Prove the dnf state-file action under real transactions
+  hosts: all
+  become: true
+  # See the reboot play below for why the role switch is required here.
+  become_flags: "-r sysadm_r -t sysadm_t"
+  gather_facts: false
+  vars:
+    proof_dir: /root/livetest-baseline/dnf-proof
+    proof_record: /root/livetest-baseline/dnf-state-proof.txt
+    proof_state_dir: /usr/lib/sysimage/libdnf5
+    proof_state_files: [environments, groups, modules, nevras, packages, system]
+    proof_snapshot_cmd: >-
+      for n in {{ proof_state_files | join(' ') }}; do
+      stat -c '%n %i %a' {{ proof_state_dir }}/${n}.toml; done
+    proof_mark_package: libdnf5-plugin-actions
+    proof_ansible_package: tree
+  tasks:
+    - name: Reset the proof record and take the starting snapshot
+      ansible.builtin.shell: |
+        set -euo pipefail
+        rm -rf {{ proof_dir }} {{ proof_record }}
+        mkdir -p {{ proof_dir }}
+        {{ proof_snapshot_cmd }} > {{ proof_dir }}/00-start.txt
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    # --- dnf CLI --------------------------------------------------------------
+
+    - name: Read the install reason of the mark package
+      ansible.builtin.command:
+        argv: [dnf, repoquery, --installed, --qf, "%{reason}", "{{ proof_mark_package }}"]
+      register: proof_mark_reason
+      changed_when: false
+
+    - name: Refuse a reason that `dnf mark` cannot restore exactly
+      # A group or external reason has no plain `dnf mark` inverse; flipping it
+      # would leave the host changed. foundation_umask installs the package
+      # itself, so the reason is normally User.
+      ansible.builtin.assert:
+        that:
+          - (proof_mark_reason.stdout | trim | lower) in ['user', 'dependency', 'weak dependency']
+        fail_msg: >-
+          {{ proof_mark_package }} has install reason '{{ proof_mark_reason.stdout | trim }}',
+          which `dnf mark` cannot restore; choose another proof_mark_package.
+
+    - name: Choose the reason change and the restore target
+      ansible.builtin.set_fact:
+        proof_mark_flip: "{{ 'dependency' if (proof_mark_reason.stdout | trim | lower) == 'user' else 'user' }}"
+        proof_mark_restore: >-
+          {{ {'user': 'user', 'dependency': 'dependency', 'weak dependency': 'weak'}
+             [proof_mark_reason.stdout | trim | lower] }}
+
+    - name: "CLI transaction 1: mark {{ proof_mark_package }} as {{ proof_mark_flip }}"
+      ansible.builtin.command:
+        argv: [dnf, -y, mark, "{{ proof_mark_flip }}", "{{ proof_mark_package }}"]
+      changed_when: true
+
+    - name: Record CLI transaction 1
+      ansible.builtin.include_tasks: tasks/dnf_state_proof_step.yml
+      vars:
+        proof_step_label: cli_mark_flip
+        proof_step_prev: 00-start
+        proof_step_cur: 01-cli-flip
+
+    - name: "CLI transaction 2: restore the reason to {{ proof_mark_restore }}"
+      ansible.builtin.command:
+        argv: [dnf, -y, mark, "{{ proof_mark_restore }}", "{{ proof_mark_package }}"]
+      changed_when: true
+
+    - name: Record CLI transaction 2
+      ansible.builtin.include_tasks: tasks/dnf_state_proof_step.yml
+      vars:
+        proof_step_label: cli_mark_restore
+        proof_step_prev: 01-cli-flip
+        proof_step_cur: 02-cli-restore
+
+    # --- ansible.builtin.dnf --------------------------------------------------
+
+    - name: Probe whether the ansible proof package is installed
+      ansible.builtin.command:
+        argv: [rpm, -q, "{{ proof_ansible_package }}"]
+      register: proof_ansible_presence
+      changed_when: false
+      failed_when: false
+
+    - name: Order the two ansible transactions so the host ends as it started
+      ansible.builtin.set_fact:
+        proof_ansible_states: "{{ ['absent', 'present'] if proof_ansible_presence.rc == 0 else ['present', 'absent'] }}"
+
+    - name: "ansible.builtin.dnf transaction 1: {{ proof_ansible_package }} {{ proof_ansible_states[0] }}"
+      ansible.builtin.dnf:
+        name: "{{ proof_ansible_package }}"
+        state: "{{ proof_ansible_states[0] }}"
+      register: proof_ansible_t1
+      failed_when: false
+
+    - name: Record ansible transaction 1
+      ansible.builtin.include_tasks: tasks/dnf_state_proof_step.yml
+      vars:
+        proof_step_label: ansible_dnf_{{ proof_ansible_states[0] }}
+        proof_step_prev: 02-cli-restore
+        proof_step_cur: 03-ansible-1
+        proof_step_undecided: >-
+          {{ ('transaction failed: ' ~ (proof_ansible_t1.msg | default('unknown')))
+             if (proof_ansible_t1.failed | default(false)) else '' }}
+
+    - name: "ansible.builtin.dnf transaction 2: {{ proof_ansible_package }} {{ proof_ansible_states[1] }}"
+      ansible.builtin.dnf:
+        name: "{{ proof_ansible_package }}"
+        state: "{{ proof_ansible_states[1] }}"
+      register: proof_ansible_t2
+      failed_when: false
+      when: not (proof_ansible_t1.failed | default(false))
+
+    - name: Record ansible transaction 2
+      ansible.builtin.include_tasks: tasks/dnf_state_proof_step.yml
+      vars:
+        proof_step_label: ansible_dnf_{{ proof_ansible_states[1] }}
+        proof_step_prev: 03-ansible-1
+        proof_step_cur: 04-ansible-2
+        proof_step_undecided: >-
+          {{ 'skipped: transaction 1 failed' if (proof_ansible_t1.failed | default(false))
+             else (('transaction failed: ' ~ (proof_ansible_t2.msg | default('unknown')))
+                   if (proof_ansible_t2.failed | default(false)) else '') }}
+
+    - name: Read the proof record
+      ansible.builtin.command:
+        argv: [cat, "{{ proof_record }}"]
+      register: proof_record_content
+      changed_when: false
+
+    - name: Report the proof record (asserted by verify.yml after the reboot)
+      ansible.builtin.debug:
+        var: proof_record_content.stdout_lines
+
 - name: Real layered reboot and boot-survival assertion
   hosts: all
   become: true

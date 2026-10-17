@@ -9,7 +9,7 @@ This Foundation layer is a prerequisite for every other Foundation layer and eve
 
 ## End-state configuration
 
-The end-state spans two independent layers. The login-side default applies to interactive sessions through PAM. The per-unit override applies to systemd-managed services and is set in topic-specific drop-ins. The two are orthogonal: neither implies the other, and changing one does not weaken the other.
+The end-state spans two independent layers and one countermeasure. The login-side default applies to interactive sessions through PAM. The per-unit override applies to systemd-managed services and is set in topic-specific drop-ins. The two are orthogonal: neither implies the other, and changing one does not weaken the other. The countermeasure keeps the package manager's own state files readable, the one collateral of the login-side mask that no write pattern can fix.
 
 ### Login-side UMASK
 
@@ -74,6 +74,27 @@ These drop-ins do not belong to the `foundation_umask` role. They belong to the 
 
 A consequence of UMASK 0027 on operator-authored config files: `sudo` does not reset the invoking user's umask when switching to UID 0. Root-spawned writes via `tee`, `cat >`, or `printf >` therefore produce files with mode `0640`. Daemons that run under a dedicated non-root user cannot read such files, because the "other" permission bit is `0`. The recommended write pattern for `/etc/**` configs is `install -m 0644 /dev/stdin <path>` from a heredoc or pipe, or `chmod 0644 <path>` immediately after a `tee`/`cat >` redirect. The drop-in's effective parse status is verified with `systemd-analyze cat-config <unit>`; a permission failure shows up on its own line as `Failed to open …: Permission denied`. Files where `0640` is correct or where the mode is fixed by other rules: `/etc/sudoers.d/*` must be `0440` (enforced by `visudo -c`); `/etc/security/limits.d/*` and `/etc/pam.d/*` are world-readable by package default and need no manual mode change. The mechanism behind this trap and the full mitigation pattern are covered in [UMASK and daemon readability](../../explanation/umask-and-daemon-readability.md).
 
+### Package-manager state files
+
+libdnf5 keeps its system state in six files under the `system_state_dir`, `/usr/lib/sysimage/libdnf5/`: `environments.toml`, `groups.toml`, `modules.toml`, `nevras.toml`, `packages.toml`, and `system.toml`. The package default is mode `0644 root:root`, which is what lets an unprivileged user run `dnf info`, `dnf list --installed`, `dnf repoquery --installed`, and `dnf group list`.
+
+libdnf5 rewrites all six files at the end of every transaction: it writes `<name>.toml.new` and renames it over the old file. The new file takes its mode from the umask of the process running the transaction, and `sudo` combines the caller's `0027` with its own default `0022`, so a transaction started through `sudo` leaves the files at `0640`. A one-time `chmod 0644` does not hold; the next transaction replaces the file and its mode with it. `transaction_history.sqlite` in the same directory is written in place and keeps its mode.
+
+The end state installs the libdnf5 actions plugin and one action file:
+
+| Path | Mode | Owner | Content |
+|---|---|---|---|
+| package `libdnf5-plugin-actions` | — | — | provides the plugin; its `/etc/dnf/libdnf5-plugins/actions.conf` carries `enabled = 1` |
+| `/etc/dnf/libdnf5-plugins/actions.d/50-system-state-perms.actions` | `0644` | `root:root` | one `post_transaction` action, below |
+
+```text
+post_transaction:::enabled=host-only:/usr/bin/chmod 0644 /usr/lib/sysimage/libdnf5/environments.toml /usr/lib/sysimage/libdnf5/groups.toml /usr/lib/sysimage/libdnf5/modules.toml /usr/lib/sysimage/libdnf5/nevras.toml /usr/lib/sysimage/libdnf5/packages.toml /usr/lib/sysimage/libdnf5/system.toml
+```
+
+The `post_transaction` hook runs after libdnf5 has saved the system state, so the `chmod` acts on the files the transaction has just written. It runs for every caller of the transaction, whatever umask that caller has. `enabled=host-only` keeps the action out of `--installroot` transactions, whose state lives under a different root. The action runs inside the package manager's own domain, `rpm_t`, which already manages these files; no SELinux policy module is involved.
+
+The grant is read access on six files and nothing else. It does not disclose more than the host already does: `dnf history info`, served from the world-readable `transaction_history.sqlite`, reports the same packages, install reasons, and source repositories, and the RPM database is world-readable as well.
+
 ## Verification
 
 Probe:
@@ -99,10 +120,16 @@ OK   shell_init_no_umask_override   none
 OK   bashrc_fallback_unchanged      [ `umask` -eq 0 ] && umask 022
 OK   system_conf_no_default_umask   none
 OK   live_login_umask               0027
+OK   pkg_libdnf5_plugin_actions     installed
+OK   dnf_actions_plugin_enabled     /etc/dnf/libdnf5-plugins/actions.conf
+OK   dnf_state_action_file          644 root:root
+OK   dnf_state_action_label         system_u:object_r:etc_t:s0
+OK   dnf_state_files_mode           6 files 644
 ```
 
-The verify script exits `0` on a clean host, `1` on drift, `2` on invocation error. The `live_login_umask` check inspects the running shell's umask; running it from an inherited environment (for example, a `sudo` chain or a `make` recipe) may report a different value than a fresh login. Run the verify script from a freshly opened login shell to evaluate the login-time path.
+The verify script exits `0` on a clean host, `1` on drift, `2` on invocation error. `dnf_state_action_file` compares the single non-comment line of the action file against the expected action. `dnf_state_action_label` compares the full SELinux context, user field included, against `matchpathcon`. `dnf_state_files_mode` is meaningful only after at least one transaction has run since the action file was installed: before that, it reflects the role's own `chmod`, afterwards the action. A `0640` here on a host where `dnf_state_action_file` is `OK` means the action did not fire. The `live_login_umask` check inspects the running shell's umask; running it from an inherited environment (for example, a `sudo` chain or a `make` recipe) may report a different value than a fresh login. Run the verify script from a freshly opened login shell to evaluate the login-time path.
 
 ## Related patterns
 
 - [UMASK and daemon readability](../../explanation/umask-and-daemon-readability.md) — Why a tightened login UMASK silently breaks system daemons that run under a dedicated non-root user, and how to write `/etc/**` configs so the daemon can still read them.
+- [Replaced files lose their mode](../../explanation/replaced-files-lose-mode.md) — Why a `chmod` on a file that its owning tool rewrites by rename does not hold, how to recognise the class, and why the fix belongs in the tool's post-write hook.

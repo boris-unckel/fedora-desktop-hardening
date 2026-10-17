@@ -54,7 +54,7 @@ If the probe produces no output at all, the role tree is not present on the targ
 
 ### Goal
 
-You install Layer 0 of the Foundation tier, establishing the system-wide login-time `UMASK` value `027` and the `HOME_MODE` value `0700` that every later layer and every Topic role consumes.
+You install Layer 0 of the Foundation tier, establishing the system-wide login-time `UMASK` value `027` and the `HOME_MODE` value `0700` that every later layer and every Topic role consumes, together with the action that keeps the dnf system-state files readable under that mask.
 
 ### Steps
 
@@ -64,6 +64,8 @@ You install Layer 0 of the Foundation tier, establishing the system-wide login-t
    ```
 
 2. The role writes `/etc/login.defs` through `ansible.builtin.lineinfile` with `backup: true`, so a `.bak` file alongside the original is the rollback source if you need to revert. The role does not push a `UMask=` directive into any systemd unit — that surface belongs to individual Topic roles that hard-set per-unit masks.
+
+3. The role also installs `libdnf5-plugin-actions` and writes `/etc/dnf/libdnf5-plugins/actions.d/50-system-state-perms.actions`. libdnf5 rewrites its state files on every transaction, so under the new mask they would come out `0640`; the action restores `0644` after each transaction. The reason a one-time `chmod` would not do is in [Replaced files lose their mode](../explanation/replaced-files-lose-mode.md).
 
 ### Verification
 
@@ -84,9 +86,14 @@ OK   shell_init_no_umask_override   none
 OK   bashrc_fallback_unchanged      [ `umask` -eq 0 ] && umask 022
 OK   system_conf_no_default_umask   none
 OK   live_login_umask               0027
+OK   pkg_libdnf5_plugin_actions     installed
+OK   dnf_actions_plugin_enabled     /etc/dnf/libdnf5-plugins/actions.conf
+OK   dnf_state_action_file          644 root:root
+OK   dnf_state_action_label         system_u:object_r:etc_t:s0
+OK   dnf_state_files_mode           6 files 644
 ```
 
-The eight `OK …` line names are stable. Their semantics — what each line probes, why the `live_login_umask` check requires a fresh login shell, the directive set that each line locks in — live in [UMASK 0027](../reference/foundation/umask.md) §"Verification" and are reached by link rather than restated here. If the output differs, do not proceed to the next step. The Recovery section below names the rollback path for this layer; otherwise re-run the apply step after addressing the failing line.
+The thirteen `OK …` line names are stable. Their semantics — what each line probes, why the `live_login_umask` check requires a fresh login shell, why `dnf_state_files_mode` proves the action only after a later transaction, the directive set that each line locks in — live in [UMASK 0027](../reference/foundation/umask.md) §"Verification" and are reached by link rather than restated here. If the output differs, do not proceed to the next step. The Recovery section below names the rollback path for this layer; otherwise re-run the apply step after addressing the failing line.
 
 ## Step 3 — Apply staff_u and sudo roles
 
@@ -306,7 +313,7 @@ Every verify exits `0` in both contexts, every `SKIP needs sysadm_t` line emitte
 
 ## Recovery
 
-R1 — Revert Layer 0. The Layer 0 `lineinfile` task writes a `.bak` backup alongside `/etc/login.defs` before editing. Restore the backup file in place and re-run `bash ansible/roles/foundation_umask/files/verify.sh`; the eight Layer 0 verify lines drop back to their pre-apply values and no reboot is required.
+R1 — Revert Layer 0. The Layer 0 `lineinfile` task writes a `.bak` backup alongside `/etc/login.defs` before editing. Restore the backup file in place, remove `/etc/dnf/libdnf5-plugins/actions.d/50-system-state-perms.actions` (and, if nothing else uses it, the `libdnf5-plugin-actions` package), and re-run `bash ansible/roles/foundation_umask/files/verify.sh`; the thirteen Layer 0 verify lines drop back to their pre-apply values and no reboot is required.
 
 R2 — Recover from the Layer 1 re-login dead-end. If the post-apply login from Step 3 refuses to establish — typically because your account has no `wheel` membership and the `sudoers` configuration has not yet been edited to permit the new role — authenticate through the second login channel named in `## Prerequisites` and revert the mapping with `semanage login -m -s unconfined_u <user>` run under `sudo -r sysadm_r -t sysadm_t`. The next interactive login as `<user>` returns to `unconfined_u`.
 

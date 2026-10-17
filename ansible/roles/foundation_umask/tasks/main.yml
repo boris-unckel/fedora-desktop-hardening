@@ -4,6 +4,8 @@
 # Pattern: Probe -> Modify -> Verify
 # Idempotent: yes (re-applying must not change state on a correctly configured host)
 # Layer 0 of the Foundation tier; no Foundation dependencies.
+# Scope: the login-time UMASK, plus the countermeasure for its one known
+# collateral that a chmod cannot fix: the libdnf5 system-state files.
 
 - name: "foundation_umask | preflight"
   ansible.builtin.import_tasks: preflight.yml
@@ -34,6 +36,45 @@
         backup: true
         validate: "grep -qE '^UMASK[[:space:]]+{{ foundation_umask_value }}$' %s"
 
+    # libdnf5 rewrites its system-state files on every transaction (new file,
+    # then rename), taking the mode from the caller's umask. A one-time chmod
+    # would be lost with the next transaction, so the mode is restored by a
+    # post_transaction action that runs after the state has been saved.
+    - name: "foundation_umask | install the libdnf5 actions plugin"
+      ansible.builtin.dnf:
+        name: "{{ foundation_umask_dnf_actions_package }}"
+        state: present
+
+    - name: "foundation_umask | keep the dnf system state world-readable after each transaction"
+      ansible.builtin.copy:
+        dest: "{{ foundation_umask_dnf_actions_file }}"
+        content: |
+          # Managed by foundation_umask.
+          # libdnf5 rewrites its system-state files on every transaction (new
+          # file, then rename); under UMASK 0027 they would be created 0640.
+          # This action restores 0644 after the state has been saved.
+          # Format: callback:package_filter:direction:options:command
+          post_transaction:::enabled=host-only:/usr/bin/chmod 0644 {{ foundation_umask_dnf_state_files | map('regex_replace', '^(.*)$', foundation_umask_dnf_state_dir ~ '/\1.toml') | join(' ') }}
+        owner: root
+        group: root
+        mode: "0644"
+      notify: "foundation_umask dnf action changed"
+
+    - name: "foundation_umask | stat the current dnf system-state files"
+      ansible.builtin.stat:
+        path: "{{ foundation_umask_dnf_state_dir }}/{{ item }}.toml"
+      loop: "{{ foundation_umask_dnf_state_files }}"
+      register: foundation_umask_dnf_state_stat
+
+    - name: "foundation_umask | set the current dnf system-state files to 0644"
+      ansible.builtin.file:
+        path: "{{ item.stat.path }}"
+        mode: "0644"
+      loop: "{{ foundation_umask_dnf_state_stat.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stat.exists | default(false)
+
   rescue:
 
     - name: "foundation_umask | rollback marker"
@@ -42,7 +83,10 @@
           Apply failed for foundation_umask. The lineinfile backup written
           alongside {{ foundation_umask_login_defs_path }} is the rollback
           source. The change does not affect existing sessions; new logins
-          read pam_umask only after a successful apply.
+          read pam_umask only after a successful apply. The dnf state-file
+          action is rolled back by removing
+          {{ foundation_umask_dnf_actions_file }} and, optionally, the
+          {{ foundation_umask_dnf_actions_package }} package.
 
   tags:
     - foundation_umask

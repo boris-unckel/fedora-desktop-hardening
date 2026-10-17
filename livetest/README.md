@@ -16,8 +16,10 @@ tier remains.
 The current run record — environment realities, every defect found and its fix, the
 per-topic disposition matrix, and the captured scores — is
 [reports/full-run-2026-08.md](reports/full-run-2026-08.md); the preceding one is
-[reports/component-tier-first-run.md](reports/component-tier-first-run.md). As of
-2026-08-01:
+[reports/component-tier-first-run.md](reports/component-tier-first-run.md). The latest
+scoped run, [reports/delta-run-umask-dnf-state.md](reports/delta-run-umask-dnf-state.md),
+re-ran the system tier for a Foundation change and extends the system-tier figures below. As
+of 2026-08-01, extended by that run:
 
 - **Component tier: 22 of 22 green.** Every role that ships a component scenario passes its
   full Molecule scenario from the baked base snapshot: create, foundation prepare, converge,
@@ -29,8 +31,11 @@ per-topic disposition matrix, and the captured scores — is
 - **System tier: fully green over 21 topics.** Cumulative converge of the Foundation plus the
   21 cloud-testable topics, a second converge with zero changed tasks, a real reboot with
   boot-survival (`is-system-running=running`), and post-reboot per-topic persistence clean in
-  both SELinux contexts for every one of the 21. `staff_wayland_memfd` is the one
-  component-tested topic held out of the system tier, by design: it needs a Wayland session.
+  both SELinux contexts for every one of the 21. The post-reboot gate also runs the four
+  Foundation roles' verify, and a side-effect step proves the libdnf5 state-file action
+  across four real transactions on both the dnf CLI and `ansible.builtin.dnf`.
+  `staff_wayland_memfd` is the one component-tested topic held out of the system tier, by
+  design: it needs a Wayland session.
 - **Security scores captured (pre → post hardening):** OpenSCAP (`ssg-fedora-ds`) pass
   count 184 → 201; Lynis hardening index 67 → 75; `systemd-analyze security` exposure
   drops for the hardened units, e.g. plymouth-start 9.5 → 1.9, alsa-state 9.6 → 2.6,
@@ -105,12 +110,17 @@ scenario; full teardown is a manual, operator-initiated step.
 
 ## Per-run artifacts
 
-Run artifacts live under `reports/`. The committed record is
+Run artifacts live under `reports/`. Four records are committed, one per run:
 [component-tier-first-run.md](reports/component-tier-first-run.md), the consolidated
-findings log across the component-tier runs and the system tier, including the
-security-scoring outputs named in [Metrics](metrics.md). The run-state model for an
-in-flight run — a machine-readable ledger holding current state only, plus an append-only
-audit log of every command, timestamp, and exit code — is prescribed in
+findings log across the first component-tier runs and the system tier;
+[delta-run-flatpak-kfd-device.md](reports/delta-run-flatpak-kfd-device.md), a scoped run
+covering a single newly added topic;
+[full-run-2026-08.md](reports/full-run-2026-08.md), the current full run; and
+[delta-run-umask-dnf-state.md](reports/delta-run-umask-dnf-state.md), a scoped system-tier
+run covering a Foundation change. Each carries the
+security-scoring outputs named in [Metrics](metrics.md) for its own run. The run-state
+model for an in-flight run — a machine-readable ledger holding current state only, plus an
+append-only audit log of every command, timestamp, and exit code — is prescribed in
 [the test concept](test-concept.md).
 
 ## Scope boundary

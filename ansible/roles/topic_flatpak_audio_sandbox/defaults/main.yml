@@ -13,12 +13,15 @@ topic_flatpak_audio_sandbox_required_packages:
 # not exercise the gap; the role aborts as a clean no-op on those hosts.
 topic_flatpak_audio_sandbox_expected_seuser_substring: "staff_u"
 
-# CIL module identity. The priority-400 publish path is provisioned by
-# foundation_selinux_cil_bootstrap.
+# Identity of a priority-400 module that would duplicate the stock grant.
+# The role removes it where it is installed; the end-state carries none.
 topic_flatpak_audio_sandbox_cil_module_name: "flatpak_audio_sandbox"
 topic_flatpak_audio_sandbox_cil_priority: 400
-topic_flatpak_audio_sandbox_cil_source_path: "/root/flatpak_audio_sandbox.cil"
-topic_flatpak_audio_sandbox_cil_source_backup_path: "/root/flatpak_audio_sandbox.cil.pre-reinstall"
+
+# Operator-side CIL source files of that module. Removed when present.
+topic_flatpak_audio_sandbox_stale_source_paths:
+  - "/root/flatpak_audio_sandbox.cil"
+  - "/root/flatpak_audio_sandbox.cil.pre-reinstall"
 
 # Per-application permission substring used by preflight to count
 # audio-permission-holding Flatpak applications. Tunable for a future
@@ -26,6 +29,6 @@ topic_flatpak_audio_sandbox_cil_source_backup_path: "/root/flatpak_audio_sandbox
 topic_flatpak_audio_sandbox_audio_permission_substring: "pulseaudio"
 
 # Expected end-state values surfaced from the verify discipline.
-topic_flatpak_audio_sandbox_expected_module_installed: "yes"
+topic_flatpak_audio_sandbox_expected_module_installed: "no"
 topic_flatpak_audio_sandbox_expected_rule_present: "yes"
 topic_flatpak_audio_sandbox_expected_avc_class_since_boot: "0"

@@ -7,13 +7,12 @@
 # presence, the operator-installed Flatpak inventory (with audio-vs-
 # audio-silent discrimination on the per-application permissions
 # column), the operator's runtime SELinux mapping, the priority-400
-# module slot, the single allow surface of the topic-owned CIL module,
-# and the AVC stream filtered for the functional-class records since
-# boot.
+# module slot, the single allow surface in the loaded policy, and the
+# AVC stream filtered for the functional-class records since boot.
 #
 # The probe never gates on observed state; the end-state of an applied
-# host is the priority-400 module installed and the single allow
-# surface present in the loaded policy.
+# host is the single allow surface present in the loaded policy from the
+# stock targeted policy, and no priority-400 module duplicating it.
 #
 # Stages that need policy-store reads (semodule, sesearch, ausearch)
 # are gated behind a sysadm_t domain check and reported as SKIP from a
@@ -98,9 +97,9 @@ probe_application_inventory() {
   printf 'application_total_count: %d\n' "${total_count}"
   printf 'audio_permission_application_count: %d\n' "${audio_count}"
   if (( audio_count == 0 )); then
-    printf 'applicability: no application declares the %s permission; gap currently unreachable\n' \
+    printf 'applicability: no application declares the %s permission; allow surface not exercised\n' \
       "${AUDIO_PERMISSION_SUBSTRING}"
-    printf '               (the policy patch still applies pre-emptively for future application installs)\n'
+    printf '               (it is still asserted, so a future application install finds it in place)\n'
   fi
 }
 

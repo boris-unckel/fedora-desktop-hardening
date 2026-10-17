@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+---
+# One step of the dnf state-file proof (see side_effect.yml).
+#
+# Snapshots the libdnf5 state files after a transaction and compares them with
+# the previous snapshot. A step passes only when every file was rewritten (new
+# inode: the transaction really replaced it) AND every file is 0644 (the
+# foundation_umask action restored the mode afterwards). An unchanged inode
+# means the step did not exercise the rewrite and is a FAIL, not a pass.
+#
+# Expects: proof_step_label, proof_step_prev, proof_step_cur, and optionally
+# proof_step_undecided (a reason string) when the transaction itself could not
+# run, in which case the step is recorded UNDECIDED without comparing.
+
+- name: "dnf state proof | record {{ proof_step_label }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    prev="{{ proof_dir }}/{{ proof_step_prev }}.txt"
+    cur="{{ proof_dir }}/{{ proof_step_cur }}.txt"
+    # Always snapshot, so the next step compares against the real current state.
+    {{ proof_snapshot_cmd }} > "${cur}"
+    {% if proof_step_undecided | default('') | length > 0 %}
+    printf 'UNDECIDED %s %s\n' "{{ proof_step_label }}" {{ proof_step_undecided | quote }} >> "{{ proof_record }}"
+    {% else %}
+    total=$(wc -l < "${cur}")
+    read -r rewritten mode_ok < <(paste -d' ' "${prev}" "${cur}" \
+      | awk '{ if ($2 != $5) r++; if ($6 == "644") m++ } END { print r+0, m+0 }')
+    verdict=FAIL
+    if [[ "${rewritten}" -eq "${total}" && "${mode_ok}" -eq "${total}" ]]; then
+      verdict=PASS
+    fi
+    printf '%s %s rewritten=%s/%s mode644=%s/%s\n' "${verdict}" "{{ proof_step_label }}" \
+      "${rewritten}" "${total}" "${mode_ok}" "${total}" >> "{{ proof_record }}"
+    {% endif %}
+  args:
+    executable: /bin/bash
+  changed_when: false

@@ -22,6 +22,9 @@ readonly BASHRC="/etc/bashrc"
 readonly SYSTEM_CONF="/etc/systemd/system.conf"
 readonly SYSTEM_CONF_D="/etc/systemd/system.conf.d"
 readonly BASHRC_FALLBACK_LINE='[ `umask` -eq 0 ] && umask 022'
+readonly DNF_ACTIONS_PACKAGE="libdnf5-plugin-actions"
+readonly DNF_ACTIONS_DIR="/etc/dnf/libdnf5-plugins/actions.d"
+readonly DNF_STATE_DIR="/usr/lib/sysimage/libdnf5"
 
 require_tool() {
   local tool="$1"
@@ -102,6 +105,22 @@ probe_live_umask() {
   printf 'umask=%s\n' "$(umask)"
 }
 
+probe_dnf_state() {
+  printf -- '--- dnf system state (%s) ---\n' "${DNF_STATE_DIR}"
+  # Inode and mtime show whether libdnf5 rewrote a file since the last look.
+  stat -c '%a %U:%G ino=%i mtime=%y %n' "${DNF_STATE_DIR}"/*.toml 2>/dev/null \
+    || printf '(no *.toml state files found)\n'
+  printf -- '--- %s ---\n' "${DNF_ACTIONS_PACKAGE}"
+  rpm -q "${DNF_ACTIONS_PACKAGE}" 2>&1 || true
+  printf -- '--- %s/ ---\n' "${DNF_ACTIONS_DIR}"
+  if [[ -d "${DNF_ACTIONS_DIR}" ]]; then
+    grep -HvE '^[[:space:]]*(#|$)' "${DNF_ACTIONS_DIR}"/*.actions 2>/dev/null \
+      || printf '(no action lines)\n'
+  else
+    printf '(directory absent)\n'
+  fi
+}
+
 main() {
   require_tool grep
   print_header
@@ -111,6 +130,7 @@ main() {
   probe_bashrc_fallback
   probe_systemd_default_umask
   probe_live_umask
+  probe_dnf_state
   printf -- '--- end of probe ---\n'
 }
 

@@ -119,7 +119,7 @@ vacuously green.
 
 | Topic | Hardens | Key verify criterion | Priority |
 |---|---|---|---|
-| `topic_flatpak_audio_sandbox` | flatpak audio sandbox policy | `flatpak_audio_sandbox.cil` loaded; allow rule present; AVC-class-clean | P3 |
+| `topic_flatpak_audio_sandbox` | flatpak audio sandbox policy | stock allow rule present; no duplicate `flatpak_audio_sandbox` module; AVC-class-clean | P3 |
 | `topic_flatpak_oci_pull_dbus` | flatpak OCI-pull D-Bus policy | `flatpak_oci_pull_dbus.cil` loaded; allow rule present; AVC-class-clean | P3 |
 | `topic_staff_wayland_memfd` | Wayland memfd policy | `staff_wayland_memfd.cil` loaded; map and write rules present; AVC-class-clean | P3 |
 | `topic_flatpak_kfd_device` | AMD compute-device access for the flatpak bwrap sandbox | `flatpak_kfd_device.cil` loaded; `staff_t x hsa_device_t : chr_file getattr` present; AVC-class-clean. The functional branch needs an AMD GPU and is a real HW-gap, confirmed out-of-band on hardware | P3 |

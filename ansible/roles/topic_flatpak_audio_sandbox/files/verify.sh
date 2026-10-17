@@ -5,10 +5,12 @@
 #
 # Compares observed runtime state against the expected end-state
 # declared in docs/reference/topics/flatpak-audio-sandbox.md. The
-# end-state is the priority-400 module flatpak_audio_sandbox loaded
-# with the single allow surface present in the loaded policy:
+# end-state is the single allow surface present in the loaded policy,
+# supplied by the stock targeted policy:
 #   - functional: staff_t × device_t : dir mounton
-# plus a clean AVC stream for the functional class since boot.
+# no priority-400 module flatpak_audio_sandbox duplicating it, and a
+# clean AVC stream for the functional class since boot. rule_present is
+# the assertion that detects a stock-policy update losing the grant.
 #
 # Stages that need policy-store reads (semodule, sesearch, ausearch)
 # are gated behind a sysadm_t domain check and reported as SKIP from a
@@ -38,7 +40,7 @@ set -euo pipefail
 
 readonly MODULE_NAME="flatpak_audio_sandbox"
 readonly MODULE_PRIORITY="400"
-readonly EXPECTED_MODULE_INSTALLED="yes"
+readonly EXPECTED_MODULE_INSTALLED="no"
 readonly EXPECTED_RULE_PRESENT="yes"
 readonly EXPECTED_AVC_CLASS_SINCE_BOOT="0"
 readonly -a CORE_PACKAGES=(
@@ -112,7 +114,7 @@ verify_module_installed() {
   fi
   if [[ "${actual}" == "${EXPECTED_MODULE_INSTALLED}" ]]; then
     report_ok "module_installed" \
-      "expected=${EXPECTED_MODULE_INSTALLED} actual=${actual} (priority ${MODULE_PRIORITY})"
+      "expected=${EXPECTED_MODULE_INSTALLED} actual=${actual} (priority ${MODULE_PRIORITY}; the grant is stock)"
   else
     report_fail "module_installed" \
       "expected=${EXPECTED_MODULE_INSTALLED} actual=${actual}"
@@ -167,7 +169,7 @@ verify_avc_class_clean() {
       "expected=${EXPECTED_AVC_CLASS_SINCE_BOOT} actual=${hits}"
   else
     report_fail "avc_class_since_boot" \
-      "expected=${EXPECTED_AVC_CLASS_SINCE_BOOT} actual=${hits} (functional rule rolled back or pre-empted)"
+      "expected=${EXPECTED_AVC_CLASS_SINCE_BOOT} actual=${hits} (stock grant lost or pre-empted)"
   fi
 }
 

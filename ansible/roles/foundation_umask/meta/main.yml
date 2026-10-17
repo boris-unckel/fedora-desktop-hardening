@@ -2,7 +2,7 @@
 ---
 galaxy_info:
   role_name: foundation_umask
-  description: "Foundation layer 0 — system-wide UMASK 0027 via /etc/login.defs and pam_umask."
+  description: "Foundation layer 0 — system-wide UMASK 0027 via /etc/login.defs and pam_umask, with the libdnf5 state-file countermeasure."
   license: "MIT"
   min_ansible_version: "2.14"
   platforms:

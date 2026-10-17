@@ -11,3 +11,22 @@ foundation_umask_home_mode: "0700"
 
 # Path to login.defs. Overridable for tests.
 foundation_umask_login_defs_path: "/etc/login.defs"
+
+# dnf system-state readability. libdnf5 rewrites its state files on every
+# transaction (new file, then rename), so their mode comes from the caller's
+# umask; under UMASK 0027 they would be created 0640 and every unprivileged
+# `dnf info` / `dnf list --installed` / `dnf repoquery --installed` fails.
+# A post_transaction action of the libdnf5 actions plugin restores 0644 after
+# the state has been saved.
+foundation_umask_dnf_actions_package: "libdnf5-plugin-actions"
+foundation_umask_dnf_actions_conf: "/etc/dnf/libdnf5-plugins/actions.conf"
+foundation_umask_dnf_actions_dir: "/etc/dnf/libdnf5-plugins/actions.d"
+foundation_umask_dnf_actions_file: "/etc/dnf/libdnf5-plugins/actions.d/50-system-state-perms.actions"
+foundation_umask_dnf_state_dir: "/usr/lib/sysimage/libdnf5"
+foundation_umask_dnf_state_files:
+  - environments
+  - groups
+  - modules
+  - nevras
+  - packages
+  - system

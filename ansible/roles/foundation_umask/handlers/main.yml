@@ -1,8 +1,30 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 ---
-# foundation_umask has no runtime handlers.
+# Handlers for foundation_umask.
 #
 # /etc/login.defs is read by pam_umask at the start of each new login session.
 # No service restart is required for the change to take effect; the next login
 # inherits the new value, and existing sessions retain their inherited umask
 # until they end. A reboot is not required by this role.
+#
+# One notification channel:
+#   "foundation_umask dnf action changed" — fires on a change to the libdnf5
+#                                           actions file. Triggers restorecon
+#                                           on the actions directory.
+
+- name: "foundation_umask | restorecon libdnf5 actions directory"
+  # -R so the directory and every actions file in it carry the context that
+  # file_contexts assigns, not the one inherited at creation time. -F also
+  # resets the SELinux user field, which `restorecon -n` does not compare.
+  # The handler inherits the play's become context: Layer 0 runs before the
+  # staff_u login mapping on a fresh host, where a fixed sysadm_r role switch
+  # is not yet authorized.
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - "-F"
+      - "-v"
+      - "-R"
+      - "{{ foundation_umask_dnf_actions_dir }}"
+  changed_when: true
+  listen: "foundation_umask dnf action changed"

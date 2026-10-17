@@ -14,6 +14,16 @@
 # flatpak_portal_cache) and the Wayland-session topic (staff_wayland_memfd) are
 # excluded by design: they need a live user session the headless system node
 # does not provide.
+#
+# The four foundation roles are applied by prepare.yml, not by converge.yml,
+# but their end state must survive the topics and the reboot as well. verify.yml
+# runs their verify.sh in the same persistence gate, ahead of the topics.
+system_tier_foundation:
+  - foundation_umask
+  - foundation_sudo_roles
+  - foundation_selinux_cil_bootstrap
+  - foundation_audit_logging_baseline
+
 system_tier_topics:
   # P1 — whole-host / boot-failure class, applied first.
   - topic_kernel_hardening

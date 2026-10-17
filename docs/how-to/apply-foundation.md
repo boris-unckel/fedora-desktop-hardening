@@ -29,7 +29,7 @@ At the end of this procedure, the four Foundation layers are applied, verified, 
    ```bash
    ansible-playbook -i inventory/<env>/hosts.yml -t foundation_umask ansible/playbooks/foundation.yml
    ```
-   Expected outcome: the role's `verify.sh` task exits `0` and the playbook reports eight `OK …` lines from the Layer 0 verify — `login_defs_umask`, `login_defs_home_mode`, `login_defs_usergroups_enab`, `pam_postlogin_umask`, `shell_init_no_umask_override`, `bashrc_fallback_unchanged`, `system_conf_no_default_umask`, and `live_login_umask`. The line semantics are documented in [UMASK 0027](../reference/foundation/umask.md).
+   Expected outcome: the role's `verify.sh` task exits `0` and the playbook reports thirteen `OK …` lines from the Layer 0 verify — `login_defs_umask`, `login_defs_home_mode`, `login_defs_usergroups_enab`, `pam_postlogin_umask`, `shell_init_no_umask_override`, `bashrc_fallback_unchanged`, `system_conf_no_default_umask`, `live_login_umask`, `pkg_libdnf5_plugin_actions`, `dnf_actions_plugin_enabled`, `dnf_state_action_file`, `dnf_state_action_label`, and `dnf_state_files_mode`. The line semantics are documented in [UMASK 0027](../reference/foundation/umask.md).
 
 3. Apply Layer 1 (`foundation_sudo_roles`) and re-login on the target to activate the `staff_u` mapping.
    ```bash
@@ -60,7 +60,7 @@ At the end of this procedure, the four Foundation layers are applied, verified, 
 
 ## Recovery
 
-R1 — Revert Layer 0. The Layer 0 `lineinfile` task writes a `.bak` backup alongside `/etc/login.defs` before editing. Restore the backup file in place and re-run `bash ansible/roles/foundation_umask/files/verify.sh`; the eight Layer 0 verify lines drop back to their pre-apply values and no reboot is required.
+R1 — Revert Layer 0. The Layer 0 `lineinfile` task writes a `.bak` backup alongside `/etc/login.defs` before editing. Restore the backup file in place, remove `/etc/dnf/libdnf5-plugins/actions.d/50-system-state-perms.actions` (and, if nothing else uses it, the `libdnf5-plugin-actions` package), and re-run `bash ansible/roles/foundation_umask/files/verify.sh`; the thirteen Layer 0 verify lines drop back to their pre-apply values and no reboot is required.
 
 R2 — Recover from the Layer 1 re-login dead-end. If the post-apply login from Step 3 refuses to establish — typically because the operator's account has no `wheel` membership and the `sudoers` configuration has not yet been edited to permit the new role — authenticate through the second login channel named in `## Prerequisites` and revert the mapping with `semanage login -m -s unconfined_u <user>` run under `sudo -r sysadm_r -t sysadm_t`. The next interactive login as `<user>` returns to `unconfined_u`.
 

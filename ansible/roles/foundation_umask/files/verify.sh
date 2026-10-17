@@ -28,6 +28,12 @@ readonly EXPECTED_HOME_MODE="0700"
 readonly EXPECTED_USERGROUPS_ENAB="yes"
 readonly EXPECTED_LIVE_UMASK="0027"
 readonly BASHRC_FALLBACK_LINE='[ `umask` -eq 0 ] && umask 022'
+readonly DNF_ACTIONS_PACKAGE="libdnf5-plugin-actions"
+readonly DNF_ACTIONS_CONF="/etc/dnf/libdnf5-plugins/actions.conf"
+readonly DNF_ACTIONS_FILE="/etc/dnf/libdnf5-plugins/actions.d/50-system-state-perms.actions"
+readonly DNF_STATE_DIR="/usr/lib/sysimage/libdnf5"
+readonly DNF_STATE_FILES=(environments groups modules nevras packages system)
+readonly EXPECTED_STATE_MODE="644"
 
 declare -i fail_state=0
 
@@ -158,9 +164,98 @@ verify_live_umask() {
   fi
 }
 
+expected_dnf_action_line() {
+  local -a paths=()
+  local name
+  for name in "${DNF_STATE_FILES[@]}"; do
+    paths+=("${DNF_STATE_DIR}/${name}.toml")
+  done
+  printf 'post_transaction:::enabled=host-only:/usr/bin/chmod 0644 %s' "${paths[*]}"
+}
+
+verify_dnf_actions_package() {
+  if rpm -q "${DNF_ACTIONS_PACKAGE}" >/dev/null 2>&1; then
+    report_ok "pkg_libdnf5_plugin_actions" "installed"
+  else
+    report_fail "pkg_libdnf5_plugin_actions" "not installed"
+  fi
+}
+
+verify_dnf_actions_enabled() {
+  if grep -qE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*(1|yes|true)[[:space:]]*$' \
+       "${DNF_ACTIONS_CONF}" 2>/dev/null; then
+    report_ok "dnf_actions_plugin_enabled" "${DNF_ACTIONS_CONF}"
+  else
+    report_fail "dnf_actions_plugin_enabled" \
+      "no 'enabled = 1' in ${DNF_ACTIONS_CONF}"
+  fi
+}
+
+verify_dnf_state_action_file() {
+  if [[ ! -f "${DNF_ACTIONS_FILE}" ]]; then
+    report_fail "dnf_state_action_file" "missing: ${DNF_ACTIONS_FILE}"
+    return
+  fi
+  # Exactly one action line, equal to the expected one; comments are free text.
+  local actions expected meta
+  actions=$(grep -vE '^[[:space:]]*(#|$)' "${DNF_ACTIONS_FILE}" || true)
+  expected=$(expected_dnf_action_line)
+  meta=$(stat -c '%a %U:%G' "${DNF_ACTIONS_FILE}")
+  if [[ "${actions}" != "${expected}" ]]; then
+    report_fail "dnf_state_action_file" \
+      "action line differs from expected: ${actions:-<none>}"
+  elif [[ "${meta}" != "644 root:root" ]]; then
+    report_fail "dnf_state_action_file" "expected=644 root:root actual=${meta}"
+  else
+    report_ok "dnf_state_action_file" "${meta}"
+  fi
+}
+
+verify_dnf_state_action_label() {
+  if [[ ! -f "${DNF_ACTIONS_FILE}" ]]; then
+    report_fail "dnf_state_action_label" "missing: ${DNF_ACTIONS_FILE}"
+    return
+  fi
+  # The full context, user field included: restorecon -n compares the type only.
+  local actual expected
+  actual=$(stat -c '%C' "${DNF_ACTIONS_FILE}")
+  expected=$(matchpathcon -n -m file "${DNF_ACTIONS_FILE}" 2>/dev/null || true)
+  if [[ -n "${expected}" && "${actual}" == "${expected}" ]]; then
+    report_ok "dnf_state_action_label" "${actual}"
+  else
+    report_fail "dnf_state_action_label" \
+      "expected=${expected:-<matchpathcon failed>} actual=${actual}"
+  fi
+}
+
+verify_dnf_state_files_mode() {
+  local name path mode
+  local -a drift=()
+  for name in "${DNF_STATE_FILES[@]}"; do
+    path="${DNF_STATE_DIR}/${name}.toml"
+    if [[ ! -e "${path}" ]]; then
+      drift+=("${name}.toml=missing")
+      continue
+    fi
+    mode=$(stat -c '%a' "${path}")
+    if [[ "${mode}" != "${EXPECTED_STATE_MODE}" ]]; then
+      drift+=("${name}.toml=${mode}")
+    fi
+  done
+  if [[ "${#drift[@]}" -eq 0 ]]; then
+    report_ok "dnf_state_files_mode" "${#DNF_STATE_FILES[@]} files ${EXPECTED_STATE_MODE}"
+  else
+    report_fail "dnf_state_files_mode" \
+      "expected=${EXPECTED_STATE_MODE} drift: ${drift[*]}"
+  fi
+}
+
 main() {
   require_tool awk
   require_tool grep
+  require_tool rpm
+  require_tool stat
+  require_tool matchpathcon
   verify_login_defs_umask
   verify_login_defs_home_mode
   verify_login_defs_usergroups_enab
@@ -169,6 +264,11 @@ main() {
   verify_bashrc_fallback
   verify_no_systemd_default_umask
   verify_live_umask
+  verify_dnf_actions_package
+  verify_dnf_actions_enabled
+  verify_dnf_state_action_file
+  verify_dnf_state_action_label
+  verify_dnf_state_files_mode
   exit "${fail_state}"
 }
 

@@ -31,3 +31,16 @@
   register: umask_line_check
   changed_when: false
   failed_when: umask_line_check.rc != 0
+
+- name: "preflight | dnf system-state directory matches the role default"
+  # The actions file names the state files by absolute path. If libdnf5 keeps
+  # its state elsewhere, the action would chmod files that are never written.
+  ansible.builtin.command:
+    argv:
+      - dnf
+      - --dump-main-config
+  register: dnf_main_config
+  changed_when: false
+  failed_when: >-
+    dnf_main_config.rc != 0 or
+    ('system_state_dir = ' ~ foundation_umask_dnf_state_dir) not in dnf_main_config.stdout_lines
